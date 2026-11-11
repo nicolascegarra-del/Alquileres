@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Administración · KLYP Alquileres</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:wght@600;700&display=swap">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wide" style="gap:28px">
+  <div class="topbar">
+    <a class="brand" href="/">KLYP Alquileres · Administración</a>
+    <a class="btn mini" href="/app">Volver a la app</a>
+  </div>
+  <p class="err" id="aviso" role="alert" hidden></p>
+  <div id="panel" class="stack-lg" hidden>
+    <section class="stats" id="stats"></section>
+    <section class="stack">
+      <h2>Usuarios</h2>
+      <label class="f" style="max-width:360px">Buscar por nombre o móvil<input type="text" id="buscar" autocomplete="off"></label>
+      <div class="card" id="reset-box" hidden>
+        <h3>Código de recuperación para <span id="reset-nombre"></span></h3>
+        <p class="code" id="reset-codigo"></p>
+        <p>Dígaselo al usuario. Vale 24 horas y un solo uso. Tiene que escribirlo en «He olvidado mi clave» junto con su móvil.</p>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Nombre</th><th>Móvil</th><th>Alta</th><th>Último acceso</th><th>Inmuebles</th><th>Ayudantes</th><th>Plan</th><th>Estado</th><th>Clave</th></tr></thead>
+        <tbody id="usuarios"></tbody>
+      </table></div>
+    </section>
+    <section class="stack">
+      <h2>Planes y límites</h2>
+      <p class="muted">Deje un límite vacío para que no tenga tope. Los cambios se aplican al momento a todos los usuarios de ese plan.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Plan</th><th>Precio (texto)</th><th>Máx. inmuebles</th><th>Máx. ayudantes</th><th></th></tr></thead>
+        <tbody id="planes"></tbody>
+      </table></div>
+    </section>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" hidden style="bottom:24px"></div>
+<script src="/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KLYP Alquileres</title>
+<meta name="description" content="La forma más sencilla de saber quién le ha pagado el alquiler y quién no. Pensada para usarla desde el móvil.">
+<meta name="theme-color" content="#2a3f9d">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:wght@600;700&display=swap">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wide">
+  <div class="topbar">
+    <a class="brand" href="/">KLYP Alquileres</a>
+    <a class="btn mini" href="/app">Entrar</a>
+  </div>
+
+  <section class="hero">
+    <div class="stack-lg">
+      <h1>Sepa de un vistazo quién le ha pagado el alquiler y quién no</h1>
+      <p class="lead">Una app para el móvil, con letra grande y botones grandes, para llevar la cuenta de sus alquileres: pagos, retrasos, averías y el teléfono de cada inquilino.</p>
+      <a class="btn primary" href="/app?registro" style="max-width:340px">Crear mi cuenta gratis</a>
+    </div>
+
+    <div class="card" id="acceso">
+      <h2>Entrar</h2>
+      <div id="ya" class="stack" hidden>
+        <p>Ya ha entrado como <b id="ya-nombre"></b>.</p>
+        <a class="btn primary" href="/app">Ir a mis alquileres</a>
+      </div>
+      <form id="form-login" class="stack">
+        <p class="err" id="login-err" role="alert" hidden></p>
+        <label class="f">Su número de móvil<input type="tel" id="login-tel" inputmode="tel" autocomplete="tel" required></label>
+        <label class="f">Clave<input type="password" id="login-pin" autocomplete="current-password" required></label>
+        <button class="btn primary" type="submit">Entrar</button>
+        <p class="muted">¿Todavía no tiene cuenta? <a href="/app?registro">Créela aquí</a>.</p>
+        <p class="muted"><a href="/app?olvido">He olvidado mi clave</a></p>
+      </form>
+    </div>
+  </section>
+
+  <section class="stack-lg">
+    <h2>Qué hace</h2>
+    <div class="feats">
+      <div class="card"><h3>Pagos con un toque</h3><p>Cada mes aparece cada inquilino. Cuando le paga, pulsa «Ha pagado» y listo.</p></div>
+      <div class="card"><h3>Impagos claros</h3><p>Una pantalla con los inmuebles que le deben dinero, cuánto y qué meses faltan por cobrar.</p></div>
+      <div class="card"><h3>Averías apuntadas</h3><p>Anote una avería con una frase y una foto, y márquela cuando esté arreglada.</p></div>
+      <div class="card"><h3>Con ayuda de la familia</h3><p>Invite a un hijo o a su gestor para que vean sus alquileres y le echen una mano.</p></div>
+    </div>
+  </section>
+
+  <section class="stack-lg">
+    <h2>Planes</h2>
+    <div class="plans" id="planes"><p class="muted">Cargando planes…</p></div>
+  </section>
+
+  <p class="muted">KLYP Alquileres · <a href="/app">Entrar</a> · <a href="/app?registro">Crear cuenta</a></p>
+</div>
+<script>
+(function () {
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function json(r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.error || 'No se ha podido completar.'); return j; }); }
+
+  fetch('/api/me', { credentials: 'same-origin' }).then(json).then(function (d) {
+    document.getElementById('ya-nombre').textContent = d.user.name;
+    document.getElementById('ya').hidden = false;
+    document.getElementById('form-login').hidden = true;
+  }).catch(function () { });
+
+  fetch('/api/plans').then(json).then(function (d) {
+    document.getElementById('planes').innerHTML = d.plans.map(function (p) {
+      var inm = p.maxProperties == null ? 'Inmuebles sin límite' : (p.maxProperties === 1 ? '1 inmueble' : 'Hasta ' + p.maxProperties + ' inmuebles');
+      var ay = p.maxHelpers == null ? 'Familiares o gestores sin límite' : (p.maxHelpers === 0 ? 'Solo para usted' : (p.maxHelpers === 1 ? '1 familiar o gestor invitado' : 'Hasta ' + p.maxHelpers + ' familiares o gestores'));
+      return '<div class="card"><h3>' + esc(p.name) + '</h3><p class="price">' + esc(p.price) + '</p><ul class="clean"><li>' + inm + '</li><li>' + ay + '</li><li>Pagos, impagos y averías</li></ul></div>';
+    }).join('');
+  }).catch(function () { document.getElementById('planes').innerHTML = '<p class="muted">No se han podido cargar los planes.</p>'; });
+
+  document.getElementById('form-login').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById('login-err');
+    err.hidden = true;
+    fetch('/api/login', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: document.getElementById('login-tel').value, pin: document.getElementById('login-pin').value })
+    }).then(json).then(function () { location.href = '/app'; })
+      .catch(function (e) { err.textContent = e.message; err.hidden = false; });
+  });
+})();
+</script>
+</body>
+</html>

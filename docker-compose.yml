@@ -1,0 +1,18 @@
+# Para probar en un equipo con Docker:  docker compose up --build
+# Después abra http://localhost:3000
+# En Coolify se recomienda desplegar con el Dockerfile (ver README.md), no con este fichero.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: Europe/Madrid
+      ADMIN_PHONE: ${ADMIN_PHONE:-}
+      SUPPORT_CONTACT: ${SUPPORT_CONTACT:-}
+    volumes:
+      - klyp-data:/data
+
+volumes:
+  klyp-data:
