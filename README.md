@@ -1,6 +1,6 @@
 # KLYP Alquileres
 
-PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pagos, impagos por inmueble, averías y contacto de cada inquilino.
+PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pagos, impagos por inmueble, facturas de suministros, averías y contacto de cada inquilino.
 
 ## Qué incluye
 
@@ -12,9 +12,26 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 | `/healthz` | Comprobación de que el servidor responde |
 
 - **Servidor:** `server.py`, Python 3 sin dependencias externas (no hay `pip install`).
-- **Datos:** SQLite en `DATA_DIR/klyp.db` y fotos de averías en `DATA_DIR/uploads`. Todo lo que hay que conservar está en esa carpeta.
+- **Datos:** SQLite en `DATA_DIR/klyp.db`; fotos de averías y PDF de facturas en `DATA_DIR/uploads`. Todo lo que hay que conservar está en esa carpeta.
 - **Acceso:** móvil + clave. La sesión queda abierta un año en el dispositivo.
 - **Planes:** Gratis, Básico y Pro, con máximo de inmuebles y de personas invitadas. Los nombres, precios y límites se cambian en `/admin`. El plan de cada usuario lo asigna el administrador a mano: **no hay cobro automático**.
+
+## Inquilinos, IPC y facturas de suministros
+
+- **Inquilinos por fechas:** cada inmueble guarda una lista de contratos (inquilino, teléfono, renta, fecha de inicio y de fin). Con «Cambiar de inquilino» el anterior queda cerrado la víspera y conserva sus pagos y deudas. Las fechas de dos inquilinos no pueden pisarse. Si uno sale y otro entra dentro del mismo mes, ese mes se le cuenta entero a los dos: no hay prorrateo.
+- **Subida del IPC:** se apunta el porcentaje y la fecha desde la que aplica (al dar de alta el inmueble o después, en la ficha). La renta sube sola desde la mensualidad de ese mes; los meses anteriores no cambian. Pasada la fecha, la ficha vuelve a mostrar «Sin subida de IPC programada» para apuntar la del año siguiente.
+- **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Impagos.
+- **Envío por WhatsApp:** tras guardar, un botón abre WhatsApp con el inquilino y el mensaje ya escrito, que incluye un enlace al PDF; solo hay que pulsar Enviar. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta.
+- **Enlace del PDF:** `/factura/<clave>.pdf` se abre sin iniciar sesión, para que el inquilino pueda verlo. La clave es aleatoria (128 bits); quien tenga el enlace puede ver esa factura.
+
+## Permisos por usuario
+
+Hay cuatro apartados: **Pagos e impagos**, **Facturas de suministros**, **Averías** e **Inmuebles e inquilinos**.
+
+- **El propietario** elige, para cada persona que invita, si en cada apartado «no lo ve», «solo puede ver» o «puede ver y anotar», y puede cambiarlo después en **Cuenta**. Así uno puede revisar los pagos y otro subir las facturas.
+- **El administrador**, en `/admin`, puede quitar apartados enteros a cualquier usuario registrado. Ese usuario deja de ver la pestaña y sus funciones, tanto en sus alquileres como en los de quien le haya invitado.
+
+El servidor comprueba los permisos en cada petición; no basta con ocultar la pestaña.
 
 ## Si un usuario olvida su clave
 
@@ -105,4 +122,5 @@ Todo está en el volumen `/data`. Programe una copia periódica de ese volumen (
 - Cobro automático de las suscripciones (por ejemplo con Stripe).
 - Recuperación de clave sin pasar por el administrador (por SMS o correo).
 - Avisos push cuando un pago se retrasa.
+- Envío de las facturas por WhatsApp sin intervención (API de WhatsApp Business de Meta).
 - Acceso por código SMS en lugar de clave (necesita un proveedor de SMS de pago).

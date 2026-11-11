@@ -48,6 +48,7 @@
     <div class="feats">
       <div class="card"><h3>Pagos con un toque</h3><p>Cada mes aparece cada inquilino. Cuando le paga, pulsa «Ha pagado» y listo.</p></div>
       <div class="card"><h3>Impagos claros</h3><p>Una pantalla con los inmuebles que le deben dinero, cuánto y qué meses faltan por cobrar.</p></div>
+      <div class="card"><h3>Facturas de luz y agua</h3><p>Suba el PDF, envíeselo al inquilino por WhatsApp con un toque y queda anotado como pendiente de pago.</p></div>
       <div class="card"><h3>Averías apuntadas</h3><p>Anote una avería con una frase y una foto, y márquela cuando esté arreglada.</p></div>
       <div class="card"><h3>Con ayuda de la familia</h3><p>Invite a un hijo o a su gestor para que vean sus alquileres y le echen una mano.</p></div>
     </div>
@@ -75,7 +76,7 @@
     document.getElementById('planes').innerHTML = d.plans.map(function (p) {
       var inm = p.maxProperties == null ? 'Inmuebles sin límite' : (p.maxProperties === 1 ? '1 inmueble' : 'Hasta ' + p.maxProperties + ' inmuebles');
       var ay = p.maxHelpers == null ? 'Familiares o gestores sin límite' : (p.maxHelpers === 0 ? 'Solo para usted' : (p.maxHelpers === 1 ? '1 familiar o gestor invitado' : 'Hasta ' + p.maxHelpers + ' familiares o gestores'));
-      return '<div class="card"><h3>' + esc(p.name) + '</h3><p class="price">' + esc(p.price) + '</p><ul class="clean"><li>' + inm + '</li><li>' + ay + '</li><li>Pagos, impagos y averías</li></ul></div>';
+      return '<div class="card"><h3>' + esc(p.name) + '</h3><p class="price">' + esc(p.price) + '</p><ul class="clean"><li>' + inm + '</li><li>' + ay + '</li><li>Pagos, impagos, facturas y averías</li></ul></div>';
     }).join('');
   }).catch(function () { document.getElementById('planes').innerHTML = '<p class="muted">No se han podido cargar los planes.</p>'; });
 

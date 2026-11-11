@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """KLYP Alquileres: servidor web + API. Solo usa la biblioteca estándar de Python.
 
-Datos en SQLite (DATA_DIR/klyp.db) y fotos en DATA_DIR/uploads.
+Datos en SQLite (DATA_DIR/klyp.db); fotos de averías y PDF de facturas en DATA_DIR/uploads.
 """
 import base64
 import hashlib
@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 import traceback
-from datetime import date
+from datetime import date, timedelta
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -46,6 +46,9 @@ COOKIE = "klyp_s"
 SESSION_SECONDS = 365 * 24 * 3600
 MAX_BODY = 8 * 1024 * 1024
 MAX_PHOTO = 3 * 1024 * 1024
+MAX_PDF = 5 * 1024 * 1024
+MODULES = ("pagos", "suministros", "averias", "inmuebles")
+KINDS = ("luz", "agua", "otro")
 MONTHS_BACK = 23  # se muestran como mucho 24 meses por inmueble
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 TYPES = {
@@ -54,6 +57,27 @@ TYPES = {
     ".webmanifest": "application/manifest+json", ".png": "image/png",
     ".svg": "image/svg+xml", ".ico": "image/x-icon", ".jpg": "image/jpeg",
 }
+
+
+def ym_of(iso):
+    return int(iso[:4]) * 12 + int(iso[5:7]) - 1
+
+
+def ym_first(ym):
+    return f"{ym // 12:04d}-{ym % 12 + 1:02d}-01"
+
+
+def rent_at(rows, ym):
+    """Renta vigente en un mes: la última fila de `rents` que empieza en ese mes o antes."""
+    cur = rows[0]["rent"]
+    for r in rows:
+        if r["from_ym"] <= ym:
+            cur = r["rent"]
+    return cur
+
+
+def raised(rent, pct):
+    return round(rent * (1 + pct / 100))
 
 
 class ApiError(Exception):
@@ -135,6 +159,34 @@ def init_db():
       id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id),
       text TEXT NOT NULL, photo TEXT, created_at TEXT NOT NULL, resolved_at TEXT);
     """)
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS contracts(
+      id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id),
+      tenant TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', start_date TEXT NOT NULL, end_date TEXT,
+      created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS rents(
+      contract_id INTEGER NOT NULL REFERENCES contracts(id), from_ym INTEGER NOT NULL,
+      rent INTEGER NOT NULL, pct REAL, PRIMARY KEY(contract_id, from_ym));
+    CREATE TABLE IF NOT EXISTS rent_payments(
+      contract_id INTEGER NOT NULL REFERENCES contracts(id), ym INTEGER NOT NULL,
+      paid_on TEXT NOT NULL, amount INTEGER NOT NULL, PRIMARY KEY(contract_id, ym));
+    CREATE TABLE IF NOT EXISTS utilities(
+      id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id),
+      contract_id INTEGER NOT NULL REFERENCES contracts(id), kind TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+      amount INTEGER NOT NULL, bill_date TEXT NOT NULL, file TEXT NOT NULL, created_at TEXT NOT NULL,
+      sent_at TEXT, paid_on TEXT);
+    """)
+    for table, col, ddl in (("properties", "utilities", "INTEGER NOT NULL DEFAULT 0"), ("members", "perms", "TEXT"),
+                            ("invites", "perms", "TEXT"), ("users", "disabled", "TEXT NOT NULL DEFAULT ''")):
+        if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    # Datos de la primera versión (un inquilino fijo por inmueble) -> contratos.
+    for p in con.execute("SELECT * FROM properties WHERE tenant<>'' AND id NOT IN (SELECT property_id FROM contracts)").fetchall():
+        cur = con.execute("INSERT INTO contracts(property_id, tenant, phone, start_date, created_at) VALUES(?,?,?,?,?)",
+                          (p["id"], p["tenant"], p["phone"], ym_first(p["start_ym"]), p["created_at"]))
+        con.execute("INSERT INTO rents(contract_id, from_ym, rent) VALUES(?,?,?)", (cur.lastrowid, p["start_ym"], p["rent"]))
+        con.execute("INSERT INTO rent_payments(contract_id, ym, paid_on, amount) "
+                    "SELECT ?, ym, paid_on, amount FROM payments WHERE property_id=?", (cur.lastrowid, p["id"]))
     if not con.execute("SELECT 1 FROM plans").fetchone():
         con.executemany(
             "INSERT INTO plans(name, price, max_properties, max_helpers, sort) VALUES(?,?,?,?,?)",
@@ -175,6 +227,57 @@ def text(data, key, maxlen, required=None):
     if required and not v:
         raise ApiError(400, required)
     return v
+
+
+def day(data, key, required=None):
+    v = str(data.get(key) or "").strip()
+    if not v:
+        if required:
+            raise ApiError(400, required)
+        return None
+    try:
+        return date.fromisoformat(v).isoformat()
+    except ValueError:
+        raise ApiError(400, "Revise la fecha.")
+
+
+def money(data, key, msg):
+    try:
+        v = round(float(str(data.get(key)).replace(",", ".")) * 100)
+    except (TypeError, ValueError):
+        raise ApiError(400, msg)
+    if not 0 < v <= 100_000_000:
+        raise ApiError(400, msg)
+    return v
+
+
+def clean_perms(raw):
+    if not isinstance(raw, dict):
+        raise ApiError(400, "Elija qué puede hacer.")
+    out = {}
+    for m in MODULES:
+        v = raw.get(m, 0)
+        if v not in (0, 1, 2):
+            raise ApiError(400, "Elija qué puede hacer.")
+        out[m] = v
+    if not any(out.values()):
+        raise ApiError(400, "Elija al menos un apartado que pueda ver.")
+    return out
+
+
+def member_perms(row):
+    """Permisos de un ayudante por apartado: 0 no lo ve, 1 solo ve, 2 ve y anota."""
+    if row["perms"]:
+        try:
+            saved = json.loads(row["perms"])
+            return {m: saved.get(m, 0) for m in MODULES}
+        except ValueError:
+            pass
+    return {m: 1 if row["role"] == "viewer" else 2 for m in MODULES}
+
+
+def disabled_set(user):
+    return {m for m in (user["disabled"] or "").split(",") if m in MODULES}
 
 
 def plan_json(p):
@@ -238,6 +341,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(405, "Método no permitido.")
             if path.startswith("/uploads/"):
                 return self.upload(path)
+            if path.startswith("/factura/"):
+                return self.bill(path)
             return self.static(path)
         except ApiError as e:
             self.send_json(e.status, {"error": e.msg})
@@ -301,12 +406,16 @@ class Handler(BaseHTTPRequestHandler):
     def cartera(self, con, user):
         raw = (self.headers.get("X-Cartera") or "").strip()
         owner_id = int(raw) if raw.isdigit() else user["id"]
-        if owner_id == user["id"]:
-            return owner_id, "owner"
-        row = con.execute("SELECT role FROM members WHERE owner_id=? AND user_id=?", (owner_id, user["id"])).fetchone()
-        if not row:
-            return user["id"], "owner"
-        return owner_id, row["role"]
+        row = None
+        if owner_id != user["id"]:
+            row = con.execute("SELECT role, perms FROM members WHERE owner_id=? AND user_id=?", (owner_id, user["id"])).fetchone()
+        if row:
+            role, lv = "helper", member_perms(row)
+        else:
+            owner_id, role, lv = user["id"], "owner", {m: 2 for m in MODULES}
+        for m in disabled_set(user):  # apartados que el administrador le ha quitado a este usuario
+            lv[m] = 0
+        return owner_id, role, lv
 
     # ---------- API ----------
     def api(self, con, m, path):
@@ -346,12 +455,12 @@ class Handler(BaseHTTPRequestHandler):
         if r == "invites" and seg[1:] == ["accept"] and m == "POST":
             return self.accept_invite(con, data, user)
 
-        owner_id, role = self.cartera(con, user)
+        owner_id, role, lv = self.cartera(con, user)
         if r == "state" and m == "GET":
-            return self.state(con, user, owner_id, role)
+            return self.state(con, user, owner_id, role, lv)
 
         if r == "properties":
-            self.need_edit(role)
+            self.need_edit(lv, "inmuebles")
             if m == "POST" and len(seg) == 1:
                 return self.save_property(con, owner_id, None, data)
             pid = self.int_seg(seg, 1)
@@ -363,11 +472,55 @@ class Handler(BaseHTTPRequestHandler):
             if m == "DELETE" and len(seg) == 2:
                 con.execute("UPDATE properties SET archived=1 WHERE id=?", (pid,))
                 return None
+            if m == "POST" and seg[2:] == ["contracts"]:
+                return self.save_contract(con, prop, None, data)
+
+        if r == "contracts":
+            cid = self.int_seg(seg, 1)
+            c = con.execute("SELECT c.* FROM contracts c JOIN properties p ON p.id=c.property_id "
+                            "WHERE c.id=? AND p.owner_id=? AND p.archived=0", (cid, owner_id)).fetchone()
+            if not c:
+                raise ApiError(404, "Ese contrato ya no existe.")
             if m == "POST" and seg[2:] == ["pay"]:
-                return self.pay(con, prop, data)
+                self.need_edit(lv, "pagos")
+                return self.pay(con, c, data)
+            self.need_edit(lv, "inmuebles")
+            if m == "PUT" and len(seg) == 2:
+                return self.save_contract(con, None, c, data)
+            if m == "DELETE" and len(seg) == 2:
+                return self.delete_contract(con, c)
+            if m == "POST" and seg[2:] == ["ipc"]:
+                return self.set_ipc(con, c, data)
+            if m == "DELETE" and seg[2:] == ["ipc"]:
+                con.execute("DELETE FROM rents WHERE contract_id=? AND from_ym>? AND pct IS NOT NULL", (cid, cur_ym()))
+                return None
+
+        if r == "utilities":
+            self.need_edit(lv, "suministros")
+            if m == "POST" and len(seg) == 1:
+                return self.new_utility(con, owner_id, data)
+            uid = self.int_seg(seg, 1)
+            u = con.execute("SELECT u.* FROM utilities u JOIN properties p ON p.id=u.property_id "
+                            "WHERE u.id=? AND p.owner_id=?", (uid, owner_id)).fetchone()
+            if not u:
+                raise ApiError(404, "Esa factura ya no existe.")
+            today = date.today().isoformat()
+            if m == "POST" and seg[2:] == ["paid"]:
+                con.execute("UPDATE utilities SET paid_on=? WHERE id=?", (today if data.get("paid", True) else None, uid))
+                return None
+            if m == "POST" and seg[2:] == ["sent"]:
+                con.execute("UPDATE utilities SET sent_at=? WHERE id=?", (today, uid))
+                return None
+            if m == "DELETE" and len(seg) == 2:
+                con.execute("DELETE FROM utilities WHERE id=?", (uid,))
+                try:
+                    os.remove(os.path.join(UPLOADS, u["file"]))
+                except OSError:
+                    pass
+                return None
 
         if r == "issues":
-            self.need_edit(role)
+            self.need_edit(lv, "averias")
             if m == "POST" and len(seg) == 1:
                 return self.new_issue(con, owner_id, data)
             if m == "POST" and seg[2:] == ["resolve"]:
@@ -389,6 +542,10 @@ class Handler(BaseHTTPRequestHandler):
             if r == "invites" and m == "DELETE" and len(seg) == 2:
                 con.execute("DELETE FROM invites WHERE code=? AND owner_id=?", (seg[1], owner_id))
                 return None
+            if r == "helpers" and m == "PUT" and len(seg) == 2:
+                con.execute("UPDATE members SET perms=? WHERE owner_id=? AND user_id=?",
+                            (json.dumps(clean_perms(data.get("perms"))), owner_id, self.int_seg(seg, 1)))
+                return None
             if r == "helpers" and m == "DELETE" and len(seg) == 2:
                 con.execute("DELETE FROM members WHERE owner_id=? AND user_id=?", (owner_id, self.int_seg(seg, 1)))
                 return None
@@ -402,9 +559,9 @@ class Handler(BaseHTTPRequestHandler):
         return int(seg[i])
 
     @staticmethod
-    def need_edit(role):
-        if role == "viewer":
-            raise ApiError(403, "Usted solo puede ver. Pida permiso al propietario para anotar.")
+    def need_edit(lv, module):
+        if lv[module] < 2:
+            raise ApiError(403, "No tiene permiso para anotar en este apartado.")
 
     def register(self, con, data):
         name = text(data, "name", 60)
@@ -468,60 +625,85 @@ class Handler(BaseHTTPRequestHandler):
         self.set_pin(con, row["id"], pin)
         return None
 
-    def state(self, con, user, owner_id, role):
+    def state(self, con, user, owner_id, role, lv):
         now = cur_ym()
+        today = date.today().isoformat()
         owner = con.execute("SELECT * FROM users WHERE id=?", (owner_id,)).fetchone()
         plan = con.execute("SELECT * FROM plans WHERE id=?", (owner["plan_id"],)).fetchone()
-        pays = {(p["property_id"], p["ym"]): p["paid_on"] for p in con.execute(
-            "SELECT pa.property_id, pa.ym, pa.paid_on FROM payments pa JOIN properties pr ON pr.id=pa.property_id "
-            "WHERE pr.owner_id=?", (owner_id,))}
-        props = []
-        for p in con.execute("SELECT * FROM properties WHERE owner_id=? AND archived=0 ORDER BY id", (owner_id,)):
-            first = max(p["start_ym"], now - MONTHS_BACK)
-            props.append({
-                "id": p["id"], "alias": p["alias"], "address": p["address"], "tenant": p["tenant"],
-                "phone": p["phone"], "rent": p["rent"] / 100, "dueDay": p["due_day"], "startYm": p["start_ym"],
-                "months": [{"ym": ym, "paidOn": pays.get((p["id"], ym))} for ym in range(first, now + 1)]})
-        issues = [{"id": i["id"], "propertyId": i["property_id"], "text": i["text"],
-                   "photo": ("/uploads/" + i["photo"]) if i["photo"] else None,
-                   "createdAt": i["created_at"], "resolvedAt": i["resolved_at"]}
-                  for i in con.execute(
-                      "SELECT i.* FROM issues i JOIN properties p ON p.id=i.property_id "
-                      "WHERE p.owner_id=? AND p.archived=0 ORDER BY i.id DESC LIMIT 300", (owner_id,))]
+        show_pay = lv["pagos"] >= 1
+        show_rent = show_pay or lv["inmuebles"] >= 1
+        rents, pays, contracts = {}, {}, {}
+        for r in con.execute(
+                "SELECT r.* FROM rents r JOIN contracts c ON c.id=r.contract_id JOIN properties p ON p.id=c.property_id "
+                "WHERE p.owner_id=? ORDER BY r.from_ym", (owner_id,)):
+            rents.setdefault(r["contract_id"], []).append(r)
+        for p in con.execute(
+                "SELECT pa.* FROM rent_payments pa JOIN contracts c ON c.id=pa.contract_id JOIN properties p ON p.id=c.property_id "
+                "WHERE p.owner_id=?", (owner_id,)):
+            pays[(p["contract_id"], p["ym"])] = p["paid_on"]
+        for c in con.execute(
+                "SELECT c.* FROM contracts c JOIN properties p ON p.id=c.property_id "
+                "WHERE p.owner_id=? AND p.archived=0 ORDER BY c.start_date", (owner_id,)):
+            rr = rents[c["id"]]
+            s = ym_of(c["start_date"])
+            e = ym_of(c["end_date"]) if c["end_date"] else None
+            last = now if e is None else min(e, now)
+            nxt = next((r for r in rr if r["from_ym"] > now and r["pct"] is not None), None)
+            contracts.setdefault(c["property_id"], []).append({
+                "id": c["id"], "tenant": c["tenant"], "phone": c["phone"],
+                "startDate": c["start_date"], "endDate": c["end_date"],
+                "active": c["start_date"] <= today and (not c["end_date"] or c["end_date"] >= today),
+                "rent": rent_at(rr, max(s, last)) / 100 if show_rent else None,
+                "nextRaise": {"pct": nxt["pct"], "fromYm": nxt["from_ym"], "rent": nxt["rent"] / 100} if nxt and show_rent else None,
+                "months": [{"ym": ym, "rent": rent_at(rr, ym) / 100, "paidOn": pays.get((c["id"], ym))}
+                           for ym in range(max(s, now - MONTHS_BACK), last + 1)] if show_pay else []})
+        props = [{"id": p["id"], "alias": p["alias"], "address": p["address"], "dueDay": p["due_day"],
+                  "utilities": bool(p["utilities"]), "contracts": contracts.get(p["id"], [])}
+                 for p in con.execute("SELECT * FROM properties WHERE owner_id=? AND archived=0 ORDER BY id", (owner_id,))]
+        issues = [] if lv["averias"] < 1 else [
+            {"id": i["id"], "propertyId": i["property_id"], "text": i["text"],
+             "photo": ("/uploads/" + i["photo"]) if i["photo"] else None,
+             "createdAt": i["created_at"], "resolvedAt": i["resolved_at"]}
+            for i in con.execute(
+                "SELECT i.* FROM issues i JOIN properties p ON p.id=i.property_id "
+                "WHERE p.owner_id=? AND p.archived=0 ORDER BY i.id DESC LIMIT 300", (owner_id,))]
+        utilities = [] if lv["suministros"] < 1 else [
+            {"id": u["id"], "propertyId": u["property_id"], "contractId": u["contract_id"], "kind": u["kind"],
+             "label": u["label"], "amount": u["amount"] / 100, "billDate": u["bill_date"], "url": "/factura/" + u["file"],
+             "createdAt": u["created_at"], "sentAt": u["sent_at"], "paidOn": u["paid_on"]}
+            for u in con.execute(
+                "SELECT u.* FROM utilities u JOIN properties p ON p.id=u.property_id "
+                "WHERE p.owner_id=? AND p.archived=0 ORDER BY u.id DESC LIMIT 400", (owner_id,))]
         carteras = [{"ownerId": user["id"], "name": user["name"], "role": "owner"}] + [
-            {"ownerId": c["owner_id"], "name": c["name"], "role": c["role"]} for c in con.execute(
-                "SELECT m.owner_id, m.role, u.name FROM members m JOIN users u ON u.id=m.owner_id WHERE m.user_id=?",
+            {"ownerId": c["owner_id"], "name": c["name"], "role": "helper"} for c in con.execute(
+                "SELECT m.owner_id, u.name FROM members m JOIN users u ON u.id=m.owner_id WHERE m.user_id=?",
                 (user["id"],))]
-        out = {"user": user_json(user), "today": date.today().isoformat(),
-               "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role},
+        out = {"user": user_json(user), "today": today,
+               "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
                "carteras": carteras, "plan": plan_json(plan), "properties": props, "issues": issues,
-               "helpers": [], "invites": []}
+               "utilities": utilities, "helpers": [], "invites": []}
         if role == "owner":
-            out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "role": h["role"]}
+            out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "perms": member_perms(h)}
                               for h in con.execute(
-                                  "SELECT m.user_id, m.role, u.name, u.phone FROM members m JOIN users u ON u.id=m.user_id "
+                                  "SELECT m.user_id, m.role, m.perms, u.name, u.phone FROM members m JOIN users u ON u.id=m.user_id "
                                   "WHERE m.owner_id=?", (owner_id,))]
-            out["invites"] = [{"code": i["code"], "name": i["name"], "role": i["role"]}
+            out["invites"] = [{"code": i["code"], "name": i["name"], "perms": member_perms(i)}
                               for i in con.execute("SELECT * FROM invites WHERE owner_id=? ORDER BY created_at", (owner_id,))]
         return out
 
     def save_property(self, con, owner_id, prop, data):
         alias = text(data, "alias", 40)
         address = text(data, "address", 120, "Escriba la dirección.")
-        tenant = text(data, "tenant", 80, "Escriba el nombre del inquilino.")
-        phone = text(data, "phone", 30)
+        utilities = 1 if data.get("utilities") else 0
         try:
-            rent = round(float(str(data.get("rent")).replace(",", ".")) * 100)
             due = int(data.get("dueDay"))
         except (TypeError, ValueError):
-            raise ApiError(400, "Revise la renta y el día de cobro.")
-        if not 0 < rent <= 100_000_000:
-            raise ApiError(400, "Escriba la renta al mes.")
+            raise ApiError(400, "Revise el día de cobro.")
         if not 1 <= due <= 28:
             raise ApiError(400, "El día de cobro debe estar entre 1 y 28.")
         if prop:
-            con.execute("UPDATE properties SET alias=?, address=?, tenant=?, phone=?, rent=?, due_day=? WHERE id=?",
-                        (alias, address, tenant, phone, rent, due, prop["id"]))
+            con.execute("UPDATE properties SET alias=?, address=?, due_day=?, utilities=? WHERE id=?",
+                        (alias, address, due, utilities, prop["id"]))
             return {"id": prop["id"]}
         plan = con.execute("SELECT p.* FROM plans p JOIN users u ON u.plan_id=p.id WHERE u.id=?", (owner_id,)).fetchone()
         count = con.execute("SELECT COUNT(*) FROM properties WHERE owner_id=? AND archived=0", (owner_id,)).fetchone()[0]
@@ -529,31 +711,134 @@ class Handler(BaseHTTPRequestHandler):
             n = plan["max_properties"]
             raise ApiError(403, f"El plan {plan['name']} permite {n} {'inmueble' if n == 1 else 'inmuebles'}. "
                                 "Para añadir más hay que cambiar de plan.")
-        now = cur_ym()
-        try:
-            start = int(data.get("startYm", now))
-        except (TypeError, ValueError):
-            start = now
-        start = min(max(start, now - MONTHS_BACK), now)
+        # tenant, phone, rent y start_ym son columnas de la primera versión: ya no se usan (ver contracts).
         cur = con.execute(
-            "INSERT INTO properties(owner_id, alias, address, tenant, phone, rent, due_day, start_ym, created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (owner_id, alias, address, tenant, phone, rent, due, start, date.today().isoformat()))
+            "INSERT INTO properties(owner_id, alias, address, tenant, rent, due_day, start_ym, utilities, created_at) "
+            "VALUES(?,?,?,'',0,?,?,?,?)",
+            (owner_id, alias, address, due, cur_ym(), utilities, date.today().isoformat()))
+        new = con.execute("SELECT * FROM properties WHERE id=?", (cur.lastrowid,)).fetchone()
+        self.save_contract(con, new, None, data)
+        return {"id": new["id"]}
+
+    def save_contract(self, con, prop, c, data):
+        """Alta (prop) o cambio (c) de un contrato: un inquilino con sus fechas y su renta."""
+        tenant = text(data, "tenant", 80, "Escriba el nombre del inquilino.")
+        phone = text(data, "phone", 30)
+        rent = money(data, "rent", "Escriba la renta al mes.")
+        start = day(data, "startDate", "Escriba la fecha en que empieza el contrato.")
+        end = day(data, "endDate")
+        if end and end < start:
+            raise ApiError(400, "La fecha de fin no puede ser anterior a la de inicio.")
+        pid = prop["id"] if prop else c["property_id"]
+        now = cur_ym()
+        if not c:
+            # El inquilino anterior, si seguía sin fecha de salida, termina la víspera.
+            con.execute("UPDATE contracts SET end_date=? WHERE property_id=? AND end_date IS NULL AND start_date<?",
+                        ((date.fromisoformat(start) - timedelta(days=1)).isoformat(), pid, start))
+        for o in con.execute("SELECT * FROM contracts WHERE property_id=? AND id<>?", (pid, c["id"] if c else 0)):
+            if start <= (o["end_date"] or "9999") and o["start_date"] <= (end or "9999"):
+                raise ApiError(400, f"Esas fechas se pisan con las de {o['tenant']}. Revise cuándo sale uno y entra el otro.")
+        if c:
+            con.execute("UPDATE contracts SET tenant=?, phone=?, start_date=?, end_date=? WHERE id=?",
+                        (tenant, phone, start, end, c["id"]))
+            rr = con.execute("SELECT * FROM rents WHERE contract_id=? ORDER BY from_ym", (c["id"],)).fetchall()
+            ref = max(ym_of(start), now if not end else min(now, ym_of(end)))
+            if rent_at(rr, ref) != rent:
+                # La renta nueva vale desde este mes; las subidas ya programadas se recalculan sobre ella.
+                frm = rr[0]["from_ym"] if ref <= rr[0]["from_ym"] else ref
+                con.execute("INSERT OR REPLACE INTO rents(contract_id, from_ym, rent, pct) VALUES(?,?,?,NULL)", (c["id"], frm, rent))
+                for r in rr:
+                    if r["from_ym"] > frm and r["pct"] is not None:
+                        con.execute("UPDATE rents SET rent=? WHERE contract_id=? AND from_ym=?",
+                                    (raised(rent, r["pct"]), c["id"], r["from_ym"]))
+            return {"id": c["id"]}
+        cur = con.execute("INSERT INTO contracts(property_id, tenant, phone, start_date, end_date, created_at) VALUES(?,?,?,?,?,?)",
+                          (pid, tenant, phone, start, end, date.today().isoformat()))
+        con.execute("INSERT INTO rents(contract_id, from_ym, rent) VALUES(?,?,?)", (cur.lastrowid, ym_of(start), rent))
+        if str(data.get("ipcPct") or "").strip():
+            new = con.execute("SELECT * FROM contracts WHERE id=?", (cur.lastrowid,)).fetchone()
+            self.set_ipc(con, new, {"pct": data.get("ipcPct"), "date": data.get("ipcDate")})
         return {"id": cur.lastrowid}
 
-    def pay(self, con, prop, data):
+    def delete_contract(self, con, c):
+        if (con.execute("SELECT 1 FROM rent_payments WHERE contract_id=?", (c["id"],)).fetchone()
+                or con.execute("SELECT 1 FROM utilities WHERE contract_id=?", (c["id"],)).fetchone()):
+            raise ApiError(400, "Este inquilino ya tiene pagos o facturas anotados. Póngale fecha de fin en lugar de quitarlo.")
+        con.execute("DELETE FROM rents WHERE contract_id=?", (c["id"],))
+        con.execute("DELETE FROM contracts WHERE id=?", (c["id"],))
+        return None
+
+    def set_ipc(self, con, c, data):
+        """Programa la subida: desde el mes de esa fecha, la renta es la vigente más el porcentaje."""
+        try:
+            pct = round(float(str(data.get("pct")).replace(",", ".").replace("%", "")), 2)
+        except (TypeError, ValueError):
+            raise ApiError(400, "Escriba el porcentaje de subida, por ejemplo 2,8.")
+        if not -20 <= pct <= 50 or pct == 0:
+            raise ApiError(400, "El porcentaje de subida debe estar entre -20 y 50.")
+        frm = ym_of(day(data, "date", "Escriba desde qué fecha se aplica la subida."))
+        if frm <= max(cur_ym(), ym_of(c["start_date"])):
+            raise ApiError(400, "La subida tiene que empezar en un mes posterior al actual y al de inicio del contrato.")
+        if c["end_date"] and frm > ym_of(c["end_date"]):
+            raise ApiError(400, "Esa fecha es posterior al fin del contrato.")
+        con.execute("DELETE FROM rents WHERE contract_id=? AND from_ym>? AND pct IS NOT NULL", (c["id"], cur_ym()))
+        rr = con.execute("SELECT * FROM rents WHERE contract_id=? ORDER BY from_ym", (c["id"],)).fetchall()
+        new = raised(rent_at(rr, frm - 1), pct)
+        con.execute("INSERT OR REPLACE INTO rents(contract_id, from_ym, rent, pct) VALUES(?,?,?,?)", (c["id"], frm, new, pct))
+        return {"rent": new / 100}
+
+    def pay(self, con, c, data):
         try:
             ym = int(data.get("ym"))
         except (TypeError, ValueError):
             raise ApiError(400, "Mes no válido.")
-        if not prop["start_ym"] <= ym <= cur_ym():
+        last = min(cur_ym(), ym_of(c["end_date"])) if c["end_date"] else cur_ym()
+        if not ym_of(c["start_date"]) <= ym <= last:
             raise ApiError(400, "Mes no válido.")
         if data.get("paid", True):
-            con.execute("INSERT OR REPLACE INTO payments(property_id, ym, paid_on, amount) VALUES(?,?,?,?)",
-                        (prop["id"], ym, date.today().isoformat(), prop["rent"]))
+            rr = con.execute("SELECT * FROM rents WHERE contract_id=? ORDER BY from_ym", (c["id"],)).fetchall()
+            con.execute("INSERT OR REPLACE INTO rent_payments(contract_id, ym, paid_on, amount) VALUES(?,?,?,?)",
+                        (c["id"], ym, date.today().isoformat(), rent_at(rr, ym)))
         else:
-            con.execute("DELETE FROM payments WHERE property_id=? AND ym=?", (prop["id"], ym))
+            con.execute("DELETE FROM rent_payments WHERE contract_id=? AND ym=?", (c["id"], ym))
         return None
+
+    def new_utility(self, con, owner_id, data):
+        try:
+            pid = int(data.get("propertyId"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "Elija un inmueble.")
+        prop = con.execute("SELECT * FROM properties WHERE id=? AND owner_id=? AND archived=0", (pid, owner_id)).fetchone()
+        if not prop:
+            raise ApiError(404, "Ese inmueble ya no existe.")
+        if not prop["utilities"]:
+            raise ApiError(400, "Ese inmueble no tiene activadas las facturas de suministros.")
+        kind = data.get("kind")
+        if kind not in KINDS:
+            raise ApiError(400, "Elija de qué es la factura.")
+        label = text(data, "label", 40, "Escriba de qué es la factura.") if kind == "otro" else ""
+        amount = money(data, "amount", "Escriba el importe de la factura.")
+        bill_date = day(data, "billDate", "Escriba la fecha de la factura.")
+        c = con.execute("SELECT * FROM contracts WHERE property_id=? AND start_date<=? AND (end_date IS NULL OR end_date>=?)",
+                        (pid, bill_date, bill_date)).fetchone()
+        if not c:
+            raise ApiError(400, "En esa fecha no había ningún inquilino en ese inmueble. Revise la fecha de la factura.")
+        raw = data.get("pdf")
+        try:
+            blob = base64.b64decode(raw, validate=True) if isinstance(raw, str) and raw else b""
+        except ValueError:
+            blob = b""
+        if not blob.startswith(b"%PDF-"):
+            raise ApiError(400, "Elija el archivo PDF de la factura.")
+        if len(blob) > MAX_PDF:
+            raise ApiError(400, "El PDF es demasiado grande (máximo 5 MB).")
+        name = secrets.token_hex(16) + ".pdf"
+        with open(os.path.join(UPLOADS, name), "wb") as f:
+            f.write(blob)
+        cur = con.execute(
+            "INSERT INTO utilities(property_id, contract_id, kind, label, amount, bill_date, file, created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (pid, c["id"], kind, label, amount, bill_date, name, date.today().isoformat()))
+        return {"id": cur.lastrowid}
 
     def new_issue(self, con, owner_id, data):
         try:
@@ -584,9 +869,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def new_invite(self, con, owner_id, data):
         name = text(data, "name", 60, "Escriba el nombre de la persona.")
-        role = data.get("role")
-        if role not in ("editor", "viewer"):
-            raise ApiError(400, "Elija qué puede hacer.")
+        perms = clean_perms(data.get("perms"))
         plan = con.execute("SELECT p.* FROM plans p JOIN users u ON u.plan_id=p.id WHERE u.id=?", (owner_id,)).fetchone()
         used = (con.execute("SELECT COUNT(*) FROM members WHERE owner_id=?", (owner_id,)).fetchone()[0]
                 + con.execute("SELECT COUNT(*) FROM invites WHERE owner_id=?", (owner_id,)).fetchone()[0])
@@ -596,8 +879,8 @@ class Handler(BaseHTTPRequestHandler):
                    f"El plan {plan['name']} permite {n} {'persona' if n == 1 else 'personas'} que le ayuden.")
             raise ApiError(403, msg + " Para invitar a más hay que cambiar de plan.")
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
-        con.execute("INSERT INTO invites(code, owner_id, name, role, created_at) VALUES(?,?,?,?,?)",
-                    (code, owner_id, name, role, date.today().isoformat()))
+        con.execute("INSERT INTO invites(code, owner_id, name, role, perms, created_at) VALUES(?,?,?,?,?,?)",
+                    (code, owner_id, name, "custom", json.dumps(perms), date.today().isoformat()))
         return {"code": code, "name": name}
 
     def accept_invite(self, con, data, user):
@@ -607,8 +890,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "Ese código no es válido o ya se ha usado.")
         if inv["owner_id"] == user["id"]:
             raise ApiError(400, "Ese código es suyo: es para la persona a la que invita.")
-        con.execute("INSERT OR REPLACE INTO members(owner_id, user_id, role) VALUES(?,?,?)",
-                    (inv["owner_id"], user["id"], inv["role"]))
+        con.execute("INSERT OR REPLACE INTO members(owner_id, user_id, role, perms) VALUES(?,?,?,?)",
+                    (inv["owner_id"], user["id"], inv["role"], inv["perms"]))
         con.execute("DELETE FROM invites WHERE code=?", (code,))
         return {"ownerId": inv["owner_id"]}
 
@@ -620,6 +903,7 @@ class Handler(BaseHTTPRequestHandler):
                 "id": u["id"], "name": u["name"], "phone": u["phone"], "createdAt": u["created_at"],
                 "lastSeen": u["last_seen"], "planId": u["plan_id"], "blocked": bool(u["blocked"]),
                 "properties": u["props"], "helpers": u["helpers"], "isAdmin": u["phone"] in ADMIN_PHONES,
+                "disabled": sorted(disabled_set(u)),
             } for u in con.execute(
                 "SELECT u.*, (SELECT COUNT(*) FROM properties p WHERE p.owner_id=u.id AND p.archived=0) AS props, "
                 "(SELECT COUNT(*) FROM members m WHERE m.owner_id=u.id) AS helpers FROM users u ORDER BY u.id DESC")]
@@ -642,6 +926,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not con.execute("SELECT 1 FROM plans WHERE id=?", (data["planId"],)).fetchone():
                     raise ApiError(400, "Ese plan no existe.")
                 con.execute("UPDATE users SET plan_id=? WHERE id=?", (data["planId"], uid))
+            if "disabled" in data:
+                off = data["disabled"]
+                if not isinstance(off, list) or any(x not in MODULES for x in off):
+                    raise ApiError(400, "Apartado no válido.")
+                con.execute("UPDATE users SET disabled=? WHERE id=?", (",".join(sorted(set(off))), uid))
             if "blocked" in data:
                 if uid == user["id"] and data["blocked"]:
                     raise ApiError(400, "No puede desactivar su propia cuenta.")
@@ -691,6 +980,18 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "No encontrado.")
         with open(full, "rb") as f:
             self.send_bytes(200, f.read(), "image/jpeg", [("Cache-Control", "private, max-age=86400")])
+
+    def bill(self, path):
+        """PDF de una factura. No pide sesión para que el inquilino pueda abrirlo desde WhatsApp:
+        la dirección lleva una clave aleatoria de 128 bits que solo conoce quien recibe el enlace."""
+        name = path[len("/factura/"):]
+        full = os.path.join(UPLOADS, name)
+        if not re.fullmatch(r"[0-9a-f]{32}\.pdf", name) or not os.path.isfile(full):
+            raise ApiError(404, "No encontrado.")
+        with open(full, "rb") as f:
+            self.send_bytes(200, f.read(), "application/pdf", [
+                ("Cache-Control", "private, max-age=3600"), ("Content-Disposition", 'inline; filename="factura.pdf"'),
+                ("X-Robots-Tag", "noindex")])
 
     def static(self, path):
         rel = {"/": "index.html", "/app": "app.html", "/admin": "admin.html"}.get(path, path.lstrip("/"))

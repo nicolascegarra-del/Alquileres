@@ -1,6 +1,6 @@
 /* Service worker: guarda la pantalla de la app para que abra aunque falle la conexión.
-   Los datos (/api) y las fotos (/uploads) nunca se guardan: siempre van al servidor. */
-const CACHE = 'klyp-alquileres-v1';
+   Los datos (/api), las fotos (/uploads) y las facturas (/factura) nunca se guardan: siempre van al servidor. */
+const CACHE = 'klyp-alquileres-v2';
 const SHELL = ['/app', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -16,7 +16,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/admin')) return;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/factura/') || url.pathname.startsWith('/admin')) return;
   // Primero la red (para tener siempre la última versión); si no hay conexión, la copia guardada.
   e.respondWith(
     fetch(e.request).then((res) => {

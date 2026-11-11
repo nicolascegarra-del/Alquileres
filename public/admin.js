@@ -19,6 +19,7 @@
     toastT = setTimeout(function () { $('toast').hidden = true; }, 4000);
   }
   function plan(id) { return D.plans.filter(function (p) { return p.id === id; })[0]; }
+  var MODS = [['pagos', 'Pagos'], ['suministros', 'Facturas'], ['averias', 'Averías'], ['inmuebles', 'Inmuebles']];
   function tope(n) { return n == null ? 'sin límite' : n; }
 
   function render() {
@@ -38,10 +39,13 @@
         '<td><select data-plan-user="' + u.id + '" aria-label="Plan de ' + esc(u.name) + '">' + D.plans.map(function (x) {
           return '<option value="' + x.id + '"' + (x.id === u.planId ? ' selected' : '') + '>' + esc(x.name) + '</option>';
         }).join('') + '</select></td>' +
+        '<td>' + MODS.map(function (m) {
+          return '<label class="mod"><input type="checkbox" data-mod-user="' + u.id + '" value="' + m[0] + '"' + (u.disabled.indexOf(m[0]) < 0 ? ' checked' : '') + '>' + m[1] + '</label>';
+        }).join('') + '</td>' +
         '<td>' + (u.blocked ? '<span class="pill bad">Desactivado</span> <button class="btn" data-bloquear="' + u.id + '" data-v="0">Activar</button>'
           : '<span class="pill ok">Activo</span> <button class="btn plain" data-bloquear="' + u.id + '" data-v="1">Desactivar</button>') + '</td>' +
         '<td><button class="btn" data-reset="' + u.id + '">Código de recuperación</button></td></tr>';
-    }).join('') : '<tr><td colspan="9" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
+    }).join('') : '<tr><td colspan="10" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
     $('planes').innerHTML = D.plans.map(function (p) {
       return '<tr><td><input type="text" id="pl-nombre-' + p.id + '" value="' + esc(p.name) + '" maxlength="30" aria-label="Nombre del plan"></td>' +
         '<td><input type="text" id="pl-precio-' + p.id + '" value="' + esc(p.price) + '" maxlength="30" aria-label="Precio"></td>' +
@@ -62,6 +66,11 @@
   document.addEventListener('change', function (ev) {
     var id = ev.target.getAttribute('data-plan-user');
     if (id) change(api('PUT', '/api/admin/users/' + id, { planId: Number(ev.target.value) }), 'Plan cambiado.');
+    var mu = ev.target.getAttribute('data-mod-user');
+    if (mu) {
+      var off = [].filter.call(document.querySelectorAll('[data-mod-user="' + mu + '"]'), function (c) { return !c.checked; }).map(function (c) { return c.value; });
+      change(api('PUT', '/api/admin/users/' + mu, { disabled: off }), 'Apartados guardados.');
+    }
   });
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest('button'); if (!b) return;
