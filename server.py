@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 import traceback
@@ -177,7 +178,8 @@ def init_db():
       sent_at TEXT, paid_on TEXT);
     """)
     for table, col, ddl in (("properties", "utilities", "INTEGER NOT NULL DEFAULT 0"), ("members", "perms", "TEXT"),
-                            ("invites", "perms", "TEXT"), ("users", "disabled", "TEXT NOT NULL DEFAULT ''")):
+                            ("invites", "perms", "TEXT"), ("users", "disabled", "TEXT NOT NULL DEFAULT ''"),
+                            ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0")):
         if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
     # Datos de la primera versión (un inquilino fijo por inmueble) -> contratos.
@@ -285,8 +287,40 @@ def plan_json(p):
             "maxProperties": p["max_properties"], "maxHelpers": p["max_helpers"]}
 
 
+def is_admin(u):
+    return bool(u["is_admin"]) or u["phone"] in ADMIN_PHONES
+
+
+def login_id(raw):
+    """Identificador de acceso: el móvil o, en las cuentas de administrador creadas por consola, un correo."""
+    raw = str(raw or "").strip().lower()
+    return raw[:120] if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", raw) else norm_phone(raw)
+
+
+def create_admin(email, pin):
+    """python server.py crear-admin correo clave  ->  crea esa cuenta de administrador (o le cambia la clave)."""
+    ident = login_id(email)
+    if "@" not in ident:
+        raise SystemExit("Escriba un correo válido.")
+    if not 6 <= len(pin) <= 100:
+        raise SystemExit("La clave debe tener al menos 6 números o letras.")
+    init_db()
+    con = db()
+    row = con.execute("SELECT id FROM users WHERE phone=?", (ident,)).fetchone()
+    if row:
+        con.execute("UPDATE users SET pass_hash=?, is_admin=1, blocked=0 WHERE id=?", (hash_pin(pin), row["id"]))
+        con.execute("DELETE FROM sessions WHERE user_id=?", (row["id"],))
+    else:
+        plan = con.execute("SELECT id FROM plans ORDER BY sort DESC, id DESC LIMIT 1").fetchone()
+        con.execute("INSERT INTO users(name, phone, pass_hash, plan_id, is_admin, created_at) VALUES(?,?,?,?,1,?)",
+                    ("Administrador", ident, hash_pin(pin), plan["id"], date.today().isoformat()))
+    con.commit()
+    con.close()
+    print(f"Administrador listo: {ident}. Entre en /admin con ese correo y su clave.")
+
+
 def user_json(u):
-    return {"id": u["id"], "name": u["name"], "phone": u["phone"], "isAdmin": u["phone"] in ADMIN_PHONES}
+    return {"id": u["id"], "name": u["name"], "phone": u["phone"], "isAdmin": is_admin(u)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -581,7 +615,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def login(self, con, data):
-        phone = norm_phone(data.get("phone"))
+        phone = login_id(data.get("phone"))
         pin = str(data.get("pin") or "")
         if too_many_fails(phone):
             raise ApiError(429, "Demasiados intentos. Espere 15 minutos y pruebe otra vez.")
@@ -896,13 +930,13 @@ class Handler(BaseHTTPRequestHandler):
         return {"ownerId": inv["owner_id"]}
 
     def admin(self, con, m, seg, data, user):
-        if user["phone"] not in ADMIN_PHONES:
+        if not is_admin(user):
             raise ApiError(403, "Solo para administradores.")
         if m == "GET" and seg == ["overview"]:
             users = [{
                 "id": u["id"], "name": u["name"], "phone": u["phone"], "createdAt": u["created_at"],
                 "lastSeen": u["last_seen"], "planId": u["plan_id"], "blocked": bool(u["blocked"]),
-                "properties": u["props"], "helpers": u["helpers"], "isAdmin": u["phone"] in ADMIN_PHONES,
+                "properties": u["props"], "helpers": u["helpers"], "isAdmin": is_admin(u),
                 "disabled": sorted(disabled_set(u)),
             } for u in con.execute(
                 "SELECT u.*, (SELECT COUNT(*) FROM properties p WHERE p.owner_id=u.id AND p.archived=0) AS props, "
@@ -1005,6 +1039,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["crear-admin"]:
+        if len(sys.argv) != 4:
+            raise SystemExit("Uso: python server.py crear-admin correo clave")
+        create_admin(sys.argv[2], sys.argv[3])
+        raise SystemExit(0)
     init_db()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True

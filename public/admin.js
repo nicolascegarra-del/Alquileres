@@ -85,8 +85,17 @@
     }), 'Plan guardado.');
   });
 
-  load().catch(function (e) {
-    $('aviso').hidden = false;
-    $('aviso').textContent = e.status === 401 ? 'Entre primero en la app con su móvil y su clave.' : e.message;
+  function start() {
+    return load().then(function () { $('aviso').hidden = true; $('entrar').hidden = true; }).catch(function (e) {
+      $('entrar').hidden = e.status !== 401;
+      $('aviso').hidden = e.status === 401;
+      $('aviso').textContent = e.message;
+    });
+  }
+  $('entrar').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    api('POST', '/api/login', { phone: $('adm-id').value, pin: $('adm-pin').value }).then(start)
+      .catch(function (e) { $('aviso').hidden = false; $('aviso').textContent = e.message; });
   });
+  start();
 })();

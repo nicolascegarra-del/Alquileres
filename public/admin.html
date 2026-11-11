@@ -16,6 +16,12 @@
     <a class="btn mini" href="/app">Volver a la app</a>
   </div>
   <p class="err" id="aviso" role="alert" hidden></p>
+  <form id="entrar" class="card stack-lg" style="max-width:420px" hidden>
+    <h2>Entrar como administrador</h2>
+    <label class="f">Correo o móvil<input type="text" id="adm-id" autocomplete="username" autocapitalize="none" required></label>
+    <label class="f">Clave<input type="password" id="adm-pin" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Entrar</button>
+  </form>
   <div id="panel" class="stack-lg" hidden>
     <section class="stats" id="stats"></section>
     <section class="stack">

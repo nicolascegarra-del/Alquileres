@@ -51,6 +51,16 @@ Compruebe que quien pide el código es de verdad el titular antes de dárselo. A
 | `PORT` | Puerto | `3000` |
 | `DATA_DIR` | Carpeta de datos | `/data` |
 
+## Crear un administrador con correo y clave
+
+Además de `ADMIN_PHONE`, se puede crear una cuenta de administrador desde la consola, en la carpeta del proyecto:
+
+```bash
+python server.py crear-admin correo@ejemplo.com suclave
+```
+
+Esa cuenta entra en `/admin` con el correo y la clave. Si el correo ya existe, el comando le cambia la clave. En Docker: `docker compose exec app python server.py crear-admin correo@ejemplo.com suclave` (el nombre del servicio puede variar).
+
 ## Probar en local
 
 Con Python 3.10 o superior:
