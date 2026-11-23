@@ -1,6 +1,6 @@
 # KLYP Alquileres
 
-PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pagos, impagos por inmueble, facturas de suministros, averías y contacto de cada inquilino.
+PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pagos, impagos por inmueble, facturas de suministros y contacto de cada inquilino.
 
 ## Qué incluye
 
@@ -12,7 +12,7 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 | `/healthz` | Comprobación de que el servidor responde |
 
 - **Servidor:** `server.py`, Python 3 sin dependencias externas (no hay `pip install`).
-- **Datos:** SQLite en `DATA_DIR/klyp.db`; fotos de averías y PDF de facturas en `DATA_DIR/uploads`. Todo lo que hay que conservar está en esa carpeta.
+- **Datos:** SQLite en `DATA_DIR/klyp.db`; PDF de las facturas de suministros en `DATA_DIR/uploads`. Todo lo que hay que conservar está en esa carpeta.
 - **Acceso:** móvil + clave. La sesión queda abierta un año en el dispositivo.
 - **Planes:** Gratis, Básico y Pro, con máximo de inmuebles y de personas invitadas. Los nombres, precios y límites se cambian en `/admin`. El plan de cada usuario lo asigna el administrador a mano: **no hay cobro automático**.
 
@@ -44,7 +44,7 @@ En `/admin`, la tabla de usuarios muestra de cada uno: alta, último acceso, inm
 
 ## Permisos por usuario
 
-Hay cuatro apartados: **Pagos e impagos**, **Facturas de suministros**, **Averías** e **Inmuebles e inquilinos**.
+Hay tres apartados: **Pagos e impagos**, **Facturas de suministros** e **Inmuebles e inquilinos**.
 
 - **El propietario** elige, para cada persona que invita, si en cada apartado «no lo ve», «solo puede ver» o «puede ver y anotar», y puede cambiarlo después en **Cuenta**. Así uno puede revisar los pagos y otro subir las facturas.
 - **El administrador**, en `/admin`, puede quitar apartados enteros a cualquier usuario registrado. Ese usuario deja de ver la pestaña y sus funciones, tanto en sus alquileres como en los de quien le haya invitado.

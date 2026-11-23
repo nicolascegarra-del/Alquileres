@@ -1,7 +1,7 @@
 {
   "name": "KLYP Alquileres",
   "short_name": "Alquileres",
-  "description": "Lleve la cuenta de sus alquileres, pagos, retrasos y averías desde el móvil.",
+  "description": "Lleve la cuenta de sus alquileres, pagos, retrasos y facturas de suministros desde el móvil.",
   "lang": "es",
   "start_url": "/app",
   "scope": "/",

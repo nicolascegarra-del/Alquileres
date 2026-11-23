@@ -16,12 +16,11 @@
     { id: 'impagos', mod: 'pagos', label: 'Impagos', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5"/><path d="M12 17.5v.2"/></svg>' },
     { id: 'facturas', mod: 'suministros', label: 'Facturas', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>' },
     { id: 'pisos', mod: 'inmuebles', label: 'Inmuebles', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-6h4v6"/></svg>' },
-    { id: 'averias', mod: 'averias', label: 'Averías', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M14.5 5.5a4.2 4.2 0 0 0-5 5.4L4 16.400 7.600 20l5.500-5.500a4.200 4.200 0 0 0 5.400-5l-2.800 2.800-2.300-.7-.7-2.300z"/></svg>' },
     { id: 'cuenta', label: 'Cuenta', svg: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c1-3.800 4-5.500 7.500-5.500s6.500 1.700 7.500 5.500"/></svg>' }
   ];
   var MODS = [
     { id: 'pagos', label: 'Pagos e impagos' }, { id: 'suministros', label: 'Facturas de suministros' },
-    { id: 'averias', label: 'Averías' }, { id: 'inmuebles', label: 'Inmuebles e inquilinos' }
+    { id: 'inmuebles', label: 'Inmuebles e inquilinos' }
   ];
   var NIVEL = ['No lo ve', 'Solo puede ver', 'Puede ver y anotar'];
   var TIPOS = { luz: 'Luz', agua: 'Agua' };
@@ -30,7 +29,7 @@
   var S = {
     data: null, tab: 'pagos', screen: null, cartera: null,
     auth: params.has('olvido') ? 'olvido' : (params.has('registro') || params.has('invitacion') ? 'registro' : 'login'), support: '',
-    invite: (params.get('invitacion') || '').toUpperCase(), err: '', photo: null, confirm: null, busy: false,
+    invite: (params.get('invitacion') || '').toUpperCase(), err: '', confirm: null, busy: false,
     doc: null, pages: [], facProp: 0
   };
   try { S.cartera = localStorage.getItem('klyp_cartera'); } catch (e) { /* sin almacenamiento */ }
@@ -300,7 +299,6 @@
   /* ---------- ficha del inmueble ---------- */
   function vPiso(id) {
     var p = prop(id), c = p.cur, mo = p.now, h, pagos = lv('pagos') >= 1;
-    var abiertas = S.data.issues.filter(function (a) { return a.propertyId === id && !a.resolvedAt; });
     var d = c ? deuda(p).filter(function (m2) { return m2.c === c; }) : [];
     var fu = c ? sinPagar(id).filter(function (u) { return u.contractId === c.id; }) : [];
     var partes = [];
@@ -373,12 +371,6 @@
         })() +
         (can('suministros') ? '<button class="btn" data-act="nueva-factura" data-id="' + id + '">Subir una factura</button>' : '') +
         '<button class="btn plain" data-act="fac-prop" data-id="' + id + '">Ver todas las facturas de este inmueble</button></section>';
-    }
-    if (lv('averias') >= 1) {
-      h += '<section class="card"><h2>Averías sin resolver</h2>' + (abiertas.length ? abiertas.map(function (a) {
-        return '<div class="kv"><span>' + esc(a.text) + '</span><b class="r">' + fecha(a.createdAt) + '</b></div>';
-      }).join('') : '<p class="muted">Ninguna.</p>') +
-        (can('averias') ? '<button class="btn" data-act="nueva-averia" data-id="' + id + '">Anotar una avería</button>' : '') + '</section>';
     }
     var edit = can('inmuebles');
     h += '<section class="card"><h2>Inquilinos</h2>' + (p.contracts.length ? '' : '<p class="muted">Todavía no ha tenido ninguno.</p>') +
@@ -710,32 +702,6 @@
       '<button class="btn primary" type="submit">Guardar</button></form>';
   }
 
-  /* ---------- averías ---------- */
-  function vAverias() {
-    var pend = S.data.issues.filter(function (a) { return !a.resolvedAt; }), hechas = S.data.issues.filter(function (a) { return a.resolvedAt; });
-    function item(a) {
-      var p = prop(a.propertyId);
-      return '<article class="card"><p><span class="pill ' + (a.resolvedAt ? 'ok' : 'warn') + '">' + (a.resolvedAt ? 'Resuelta' : 'Pendiente') + '</span></p>' +
-        '<h2>' + esc(a.text) + '</h2><p class="muted">' + esc(p ? nom(p) : '') + ' · ' + fecha(a.createdAt) + '</p>' +
-        (a.photo ? '<img class="thumb" src="' + a.photo + '" alt="Foto de la avería" loading="lazy">' : '') +
-        (!a.resolvedAt && can('averias') ? '<button class="btn" data-act="resolver" data-id="' + a.id + '">Ya está arreglada</button>' : '') + '</article>';
-    }
-    return '<header><h1>Averías</h1></header>' +
-      (can('averias') && S.data.properties.length ? '<button class="btn primary" data-act="nueva-averia">+ Anotar una avería</button>' : '') +
-      '<section class="stack"><h2>Pendientes (' + pend.length + ')</h2>' + (pend.length ? pend.map(item).join('') : '<p class="muted">No hay averías pendientes.</p>') + '</section>' +
-      (hechas.length ? '<section class="stack"><h2>Resueltas (' + hechas.length + ')</h2>' + hechas.map(item).join('') + '</section>' : '');
-  }
-  function vNuevaAveria(sel) {
-    return '<button class="back" data-act="volver">‹ Volver</button><header><h1>Anotar una avería</h1></header>' +
-      '<form id="form-averia" class="stack-lg">' +
-      '<label class="f">¿En qué inmueble?<select id="averia-piso">' + S.data.properties.map(function (p) {
-        return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(nom(p)) + '</option>';
-      }).join('') + '</select></label>' +
-      '<label class="f">¿Qué ha pasado?<textarea id="averia-txt" maxlength="300" placeholder="Por ejemplo: la lavadora pierde agua" required></textarea></label>' +
-      '<label class="f">Foto (si quiere)<input type="file" id="averia-foto" accept="image/*"></label>' +
-      '<button class="btn primary" type="submit">Guardar avería</button></form>';
-  }
-
   /* ---------- cuenta ---------- */
   function vCuenta() {
     var d = S.data, pl = d.plan, h = '<header class="stack"><h1>Mi cuenta</h1><p class="muted">' + esc(d.user.name) + ' · ' + esc(d.user.phone) + '</p></header>';
@@ -819,13 +785,12 @@
       else if (s && s.name === 'form-ipc') h = vFormIpc(s);
       else if (s && s.name === 'nueva-factura') h = vNuevaFactura(s.id);
       else if (s && s.name === 'factura-ok') h = vFacturaOk(s);
-      else if (s && s.name === 'nueva-averia') h = vNuevaAveria(s.id);
       else if (s && s.name === 'nuevo-acuerdo') h = vNuevoAcuerdo(s);
       else if (s && s.name === 'acuerdo') h = vAcuerdo(s);
       else if (s && s.name === 'importe') h = vImporte(s);
       else if (s && s.name === 'invitar') h = vInvitar(s);
       else if (s && s.name === 'invitado') h = vInvitado(s);
-      else h = { pagos: vPagos, impagos: vImpagos, facturas: vFacturas, pisos: vPisos, averias: vAverias, cuenta: vCuenta }[S.tab]();
+      else h = { pagos: vPagos, impagos: vImpagos, facturas: vFacturas, pisos: vPisos, cuenta: vCuenta }[S.tab]();
       tabsBar.hidden = false; appEl.classList.remove('no-tabs');
       tabsEl.style.gridTemplateColumns = 'repeat(' + tabs.length + ',1fr)';
       tabsEl.classList.toggle('many', tabs.length > 5);
@@ -853,7 +818,6 @@
     else if (act === 'ir') go({ name: b.getAttribute('data-screen') });
     else if (act === 'permisos') go({ name: 'invitar', uid: Number(b.getAttribute('data-uid')) });
     else if (act === 'volver') go(S.screen && S.screen.id && S.screen.name !== 'piso' ? { name: 'piso', id: S.screen.id } : null);
-    else if (act === 'nueva-averia') { S.photo = null; go({ name: 'nueva-averia', id: id }); }
     else if (act === 'nueva-factura') { S.doc = null; S.pages = []; go({ name: 'nueva-factura', id: id }); }
     else if (act === 'mail-auto') {
       if (S.busy) return;
@@ -901,10 +865,6 @@
     }
     else if (act === 'borrar-factura') { S.confirm = 'u' + id; render(false); }
     else if (act === 'borrar-factura-si') { S.confirm = null; run(function () { return api('DELETE', '/api/utilities/' + id); }, 'Factura borrada.'); }
-    else if (act === 'resolver') {
-      run(function () { return api('POST', '/api/issues/' + id + '/resolve', { resolved: true }); }, 'Avería marcada como resuelta.',
-        function () { run(function () { return api('POST', '/api/issues/' + id + '/resolve', { resolved: false }); }); });
-    }
     else if (act === 'borrar') { S.confirm = id; render(false); }
     else if (act === 'borrar-no') { S.confirm = null; render(false); }
     else if (act === 'borrar-si') { S.screen = null; S.confirm = null; run(function () { return api('DELETE', '/api/properties/' + id); }, 'Inmueble quitado.'); }
@@ -939,19 +899,7 @@
     if (/^ac-/.test(t.id)) { previa(); return; }
     if (t.id === 'fac-filtro') { S.facProp = Number(t.value); render(false); return; }
     if ((t.id === 'fac-foto' || t.id === 'fac-archivo') && t.files && t.files.length) { añadirDoc([].slice.call(t.files)); t.value = ''; return; }
-    if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; return; }
-    /* Reduce la foto en el móvil antes de enviarla. */
-    if (t.id !== 'averia-foto' || !t.files || !t.files[0]) return;
-    S.photo = null;
-    var url = URL.createObjectURL(t.files[0]), img = new Image();
-    img.onload = function () {
-      var k = Math.min(1, 1280 / Math.max(img.width, img.height)), c = document.createElement('canvas');
-      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      S.photo = c.toDataURL('image/jpeg', 0.8); URL.revokeObjectURL(url);
-    };
-    img.onerror = function () { URL.revokeObjectURL(url); toast('No se ha podido leer esa foto.'); };
-    img.src = url;
+    if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; }
   });
 
   function aceptar(code) {
@@ -1098,10 +1046,6 @@
       run(function () {
         return api('POST', '/api/contracts/' + sel[0] + '/amount', { ym: Number(sel[1]), amount: v('imp-importe') }).then(function () { S.screen = { name: 'piso', id: si2.id }; });
       }, 'Importe guardado.').then(function () { window.scrollTo(0, 0); });
-    } else if (f === 'form-averia') {
-      run(function () {
-        return api('POST', '/api/issues', { propertyId: Number(v('averia-piso')), text: v('averia-txt'), photo: S.photo }).then(function () { S.photo = null; S.tab = 'averias'; S.screen = null; });
-      }, 'Avería guardada.').then(function () { window.scrollTo(0, 0); });
     } else if (f === 'form-invitar') {
       var nombre = v('inv-nombre'), uid = S.screen.uid, perms = {};
       MODS.forEach(function (m) { perms[m.id] = Number(v('inv-' + m.id)); });

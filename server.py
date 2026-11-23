@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """KLYP Alquileres: servidor web + API. Solo usa la biblioteca estándar de Python.
 
-Datos en SQLite (DATA_DIR/klyp.db); fotos de averías y PDF de facturas en DATA_DIR/uploads.
+Datos en SQLite (DATA_DIR/klyp.db); PDF de las facturas de suministros en DATA_DIR/uploads.
 """
 import base64
 import calendar
@@ -51,9 +51,8 @@ PORT = int(os.environ.get("PORT", "3000"))
 COOKIE = "klyp_s"
 SESSION_SECONDS = 365 * 24 * 3600
 MAX_BODY = 8 * 1024 * 1024
-MAX_PHOTO = 3 * 1024 * 1024
 MAX_PDF = 5 * 1024 * 1024
-MODULES = ("pagos", "suministros", "averias", "inmuebles")
+MODULES = ("pagos", "suministros", "inmuebles")
 KINDS = ("luz", "agua", "otro")
 MONTHS_BACK = 23  # se muestran como mucho 24 meses por inmueble
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -178,9 +177,6 @@ def init_db():
     CREATE TABLE IF NOT EXISTS payments(
       property_id INTEGER NOT NULL REFERENCES properties(id), ym INTEGER NOT NULL,
       paid_on TEXT NOT NULL, amount INTEGER NOT NULL, PRIMARY KEY(property_id, ym));
-    CREATE TABLE IF NOT EXISTS issues(
-      id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id),
-      text TEXT NOT NULL, photo TEXT, created_at TEXT NOT NULL, resolved_at TEXT);
     """)
     con.executescript("""
     CREATE TABLE IF NOT EXISTS contracts(
@@ -469,8 +465,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, out if out is not None else {"ok": True})
             if self.command != "GET":
                 raise ApiError(405, "Método no permitido.")
-            if path.startswith("/uploads/"):
-                return self.upload(path)
             if path.startswith("/factura/"):
                 return self.bill(path)
             return self.static(path)
@@ -692,21 +686,6 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return None
 
-        if r == "issues":
-            self.need_edit(lv, "averias")
-            if m == "POST" and len(seg) == 1:
-                return self.new_issue(con, owner_id, data)
-            if m == "POST" and seg[2:] == ["resolve"]:
-                iid = self.int_seg(seg, 1)
-                ok = con.execute(
-                    "SELECT 1 FROM issues i JOIN properties p ON p.id=i.property_id WHERE i.id=? AND p.owner_id=?",
-                    (iid, owner_id)).fetchone()
-                if not ok:
-                    raise ApiError(404, "Esa avería ya no existe.")
-                con.execute("UPDATE issues SET resolved_at=? WHERE id=?",
-                            (date.today().isoformat() if data.get("resolved", True) else None, iid))
-                return None
-
         if r in ("invites", "helpers"):
             if role != "owner":
                 raise ApiError(403, "Solo el propietario puede cambiar quién le ayuda.")
@@ -853,13 +832,6 @@ class Handler(BaseHTTPRequestHandler):
         props = [{"id": p["id"], "alias": p["alias"], "address": p["address"], "dueDay": p["due_day"],
                   "utilities": bool(p["utilities"]), "contracts": contracts.get(p["id"], [])}
                  for p in con.execute("SELECT * FROM properties WHERE owner_id=? AND archived=0 ORDER BY id", (owner_id,))]
-        issues = [] if lv["averias"] < 1 else [
-            {"id": i["id"], "propertyId": i["property_id"], "text": i["text"],
-             "photo": ("/uploads/" + i["photo"]) if i["photo"] else None,
-             "createdAt": i["created_at"], "resolvedAt": i["resolved_at"]}
-            for i in con.execute(
-                "SELECT i.* FROM issues i JOIN properties p ON p.id=i.property_id "
-                "WHERE p.owner_id=? AND p.archived=0 ORDER BY i.id DESC LIMIT 300", (owner_id,))]
         utilities = [] if lv["suministros"] < 1 else [
             {"id": u["id"], "propertyId": u["property_id"], "contractId": u["contract_id"], "kind": u["kind"],
              "label": u["label"], "amount": u["amount"] / 100, "billDate": u["bill_date"], "url": "/factura/" + u["file"], "agreementId": u["agreement_id"],
@@ -874,7 +846,7 @@ class Handler(BaseHTTPRequestHandler):
                 (user["id"],))]
         out = {"user": user_json(user), "today": today,
                "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
-               "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props, "issues": issues,
+               "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props,
                "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "helpers": [], "invites": []}
         if role == "owner":
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "perms": member_perms(h)}
@@ -1147,33 +1119,6 @@ class Handler(BaseHTTPRequestHandler):
                     (today, today, u["id"]))
         return {"to": c["email"]}
 
-    def new_issue(self, con, owner_id, data):
-        try:
-            pid = int(data.get("propertyId"))
-        except (TypeError, ValueError):
-            raise ApiError(400, "Elija un inmueble.")
-        if not con.execute("SELECT 1 FROM properties WHERE id=? AND owner_id=? AND archived=0", (pid, owner_id)).fetchone():
-            raise ApiError(404, "Ese inmueble ya no existe.")
-        txt = text(data, "text", 300, "Escriba qué ha pasado.")
-        photo = None
-        raw = data.get("photo")
-        if raw:
-            prefix = "data:image/jpeg;base64,"
-            if not isinstance(raw, str) or not raw.startswith(prefix):
-                raise ApiError(400, "La foto no es válida.")
-            try:
-                blob = base64.b64decode(raw[len(prefix):], validate=True)
-            except ValueError:
-                raise ApiError(400, "La foto no es válida.")
-            if len(blob) > MAX_PHOTO or blob[:2] != b"\xff\xd8":
-                raise ApiError(400, "La foto no es válida o es demasiado grande.")
-            photo = secrets.token_hex(16) + ".jpg"
-            with open(os.path.join(UPLOADS, photo), "wb") as f:
-                f.write(blob)
-        cur = con.execute("INSERT INTO issues(property_id, text, photo, created_at) VALUES(?,?,?,?)",
-                          (pid, txt, photo, date.today().isoformat()))
-        return {"id": cur.lastrowid}
-
     def new_invite(self, con, owner_id, data):
         name = text(data, "name", 60, "Escriba el nombre de la persona.")
         perms = clean_perms(data.get("perms"))
@@ -1331,26 +1276,6 @@ class Handler(BaseHTTPRequestHandler):
         raise ApiError(404, "No encontrado.")
 
     # ---------- ficheros ----------
-    def upload(self, path):
-        name = path[len("/uploads/"):]
-        if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name):
-            raise ApiError(404, "No encontrado.")
-        con = db()
-        try:
-            user = self.current_user(con)
-            row = con.execute("SELECT p.owner_id FROM issues i JOIN properties p ON p.id=i.property_id WHERE i.photo=?",
-                              (name,)).fetchone()
-            allowed = row and (row["owner_id"] == user["id"] or con.execute(
-                "SELECT 1 FROM members WHERE owner_id=? AND user_id=?", (row["owner_id"], user["id"])).fetchone())
-            con.commit()
-        finally:
-            con.close()
-        full = os.path.join(UPLOADS, name)
-        if not allowed or not os.path.isfile(full):
-            raise ApiError(404, "No encontrado.")
-        with open(full, "rb") as f:
-            self.send_bytes(200, f.read(), "image/jpeg", [("Cache-Control", "private, max-age=86400")])
-
     def bill(self, path):
         """PDF de una factura. No pide sesión para que el inquilino pueda abrirlo desde WhatsApp:
         la dirección lleva una clave aleatoria de 128 bits que solo conoce quien recibe el enlace."""

@@ -19,7 +19,7 @@
     toastT = setTimeout(function () { $('toast').hidden = true; }, 4000);
   }
   function plan(id) { return D.plans.filter(function (p) { return p.id === id; })[0]; }
-  var MODS = [['pagos', 'Pagos'], ['averias', 'Averías'], ['inmuebles', 'Inmuebles']], VER = null;
+  var MODS = [['pagos', 'Pagos'], ['inmuebles', 'Inmuebles']], VER = null;
   function limite(u) { return u.maxProps != null ? u.maxProps : plan(u.planId).maxProperties; }
   function tope(n) { return n == null ? 'sin límite' : n; }
 
