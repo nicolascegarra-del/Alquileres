@@ -7,7 +7,8 @@
     ok: '<svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     warn: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
     bad: '<svg class="i" viewBox="0 0 24 24"><path d="M12 5v9"/><path d="M12 18.5v.5"/></svg>',
-    none: '<svg class="i" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/></svg>'
+    none: '<svg class="i" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/></svg>',
+    deal: '<svg class="i" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><path d="M9 15l2 2 4-4"/></svg>'
   };
   /* mod: apartado del que depende la pestaña. Cuenta se ve siempre. */
   var TABS = [
@@ -29,7 +30,8 @@
   var S = {
     data: null, tab: 'pagos', screen: null, cartera: null,
     auth: params.has('olvido') ? 'olvido' : (params.has('registro') || params.has('invitacion') ? 'registro' : 'login'), support: '',
-    invite: (params.get('invitacion') || '').toUpperCase(), err: '', photo: null, confirm: null, busy: false
+    invite: (params.get('invitacion') || '').toUpperCase(), err: '', photo: null, confirm: null, busy: false,
+    doc: null, pages: [], facProp: 0
   };
   try { S.cartera = localStorage.getItem('klyp_cartera'); } catch (e) { /* sin almacenamiento */ }
 
@@ -57,13 +59,36 @@
   function prop(id) { return S.data.properties.filter(function (p) { return p.id === id; })[0]; }
   function contrato(p, cid) { return p.contracts.filter(function (c) { return c.id === cid; })[0]; }
   function est(p, mo) {
-    var h = hoy();
+    var h = hoy(), due = mo.due;
     if (mo.paidOn) return { k: 'ok', label: 'Pagado', sub: 'Pagó el ' + fecha(mo.paidOn) };
+    if (mo.agreementId) {
+      return estAc(S.ags[mo.agreementId]).done ? { k: 'ok', label: 'Pagado con el acuerdo', sub: 'Saldado con el acuerdo de pago' }
+        : { k: 'deal', label: 'En acuerdo de pago', sub: 'Se paga con las cuotas del acuerdo' };
+    }
     if (mo.ym < h.ym) return { k: 'bad', label: 'Sin pagar', sub: 'Mes anterior sin cobrar' };
-    if (p.dueDay < h.d) return { k: 'bad', label: 'Retrasado ' + dias(h.d - p.dueDay), sub: 'Tenía que pagar el día ' + p.dueDay };
-    if (p.dueDay === h.d) return { k: 'warn', label: 'Se cobra hoy', sub: 'Todavía sin pagar' };
-    return { k: 'warn', label: 'Pendiente', sub: 'Se cobra el día ' + p.dueDay + ' (faltan ' + dias(p.dueDay - h.d) + ')' };
+    if (due < h.d) return { k: 'bad', label: 'Retrasado ' + dias(h.d - due), sub: 'Tenía que pagar el día ' + due };
+    if (due === h.d) return { k: 'warn', label: 'Se cobra hoy', sub: 'Todavía sin pagar' };
+    return { k: 'warn', label: 'Pendiente', sub: 'Se cobra el día ' + due + ' (faltan ' + dias(due - h.d) + ')' };
   }
+  function cent(n) { return Math.round(n * 100); }
+  /* Situación de un acuerdo de pago. Importes en céntimos para no arrastrar decimales. */
+  function estAc(a) {
+    var h = hoy(), total = cent(a.total), extra = cent(a.extra), paid = cent(suma(a.payments, 'amount'));
+    var left = Math.max(0, total - paid), cuotas = Math.ceil(total / extra), vencidas = 0;
+    for (var ym = a.startYm; ym <= h.ym; ym++) if (ym < h.ym || a.p.dueDay < h.d) vencidas++;
+    var late = Math.max(0, Math.min(total, vencidas * extra) - paid);
+    var mesActual = Math.max(0, Math.min(total, Math.max(0, h.ym - a.startYm + 1) * extra) - paid);
+    var e = { left: left / 100, paid: paid / 100, late: late / 100, thisMonth: mesActual / 100, cuotas: cuotas, endYm: a.startYm + cuotas - 1, done: left === 0 };
+    if (e.done) { e.k = 'ok'; e.label = 'Acuerdo cumplido'; }
+    else if (a.brokenAt) { e.k = 'bad'; e.label = 'No cumplido · quedan ' + eur(e.left); }
+    else if (late) { e.k = 'bad'; e.label = 'Va retrasado · debe ' + eur(e.late) + ' de cuotas'; }
+    else if (mesActual && h.ym >= a.startYm) { e.k = 'warn'; e.label = 'Al día · falta la cuota de ' + mes(h.ym); }
+    else { e.k = 'deal'; e.label = 'Al día'; }
+    return e;
+  }
+  function vive(c, ym) { return ym >= ymDe(c.startDate) && (!c.endDate || ymDe(c.endDate) >= ym); }
+  function ymDe(iso) { return Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1; }
+  function rentaEn(c, ym) { return !vive(c, ym) ? 0 : (c.nextRaise && ym >= c.nextRaise.fromYm ? c.nextRaise.rent : c.rent); }
   function deuda(p) { return p.months.filter(function (mo) { return est(p, mo).k === 'bad'; }); }
   function suma(arr, k) { return arr.reduce(function (a, x) { return a + x[k]; }, 0); }
   function lv(m) { return S.data.cartera.perms[m]; }
@@ -75,7 +100,7 @@
   }
   function telLimpio(t) { var d = String(t).replace(/\D/g, ''); return d.length === 9 ? '34' + d : d; }
   function tipo(u) { return TIPOS[u.kind] || u.label; }
-  function sinPagar(pid) { return S.data.utilities.filter(function (u) { return !u.paidOn && (!pid || u.propertyId === pid); }); }
+  function sinPagar(pid) { return S.data.utilities.filter(function (u) { return !u.paidOn && !u.agreementId && (!pid || u.propertyId === pid); }); }
   function periodo(c) { return c.endDate ? 'Del ' + fechaC(c.startDate) + ' al ' + fechaC(c.endDate) : 'Desde el ' + fechaC(c.startDate); }
   function resumen(perms) {
     var t = MODS.filter(function (m) { return perms[m.id] > 0; }).map(function (m) { return m.label + (perms[m.id] === 1 ? ' (solo ver)' : ''); });
@@ -85,7 +110,9 @@
   /* Prepara los datos del servidor: inquilino actual y meses de todos los inquilinos, en orden. */
   function preparar(d) {
     var ym = Number(d.today.slice(0, 4)) * 12 + Number(d.today.slice(5, 7)) - 1;
+    S.ags = {};
     d.properties.forEach(function (p) {
+      p.contracts.forEach(function (c) { c.agreements.forEach(function (a) { a.c = c; a.p = p; S.ags[a.id] = a; }); });
       p.cur = p.contracts.filter(function (c) { return c.active; })[0] || null;
       p.months = [];
       p.contracts.forEach(function (c) { c.months.forEach(function (mo) { mo.c = c; p.months.push(mo); }); });
@@ -172,8 +199,9 @@
   }
 
   /* ---------- pagos ---------- */
-  function fila(p, sub, monto) {
-    var k = p.now ? est(p, p.now).k : 'none';
+  function fila(p, sub, monto, mo) {
+    mo = mo === undefined ? p.now : mo;
+    var k = mo ? est(p, mo).k : 'none';
     return '<button class="row" data-act="abrir" data-id="' + p.id + '"><span class="dot ' + k + '">' + ICON[k] + '</span>' +
       '<span><span class="t">' + esc(nom(p)) + '</span><br><span class="s">' + sub + '</span></span>' +
       '<span class="amt">' + monto + '</span></button>';
@@ -183,65 +211,82 @@
       (can('inmuebles') ? '<button class="btn primary" data-act="ir" data-screen="form-piso">+ Añadir un inmueble</button>' : '') + '</section>';
   }
   function vPagos() {
-    var h = hoy(), ps = S.data.properties, total = 0, cobrado = 0, g = { bad: [], warn: [], ok: [], none: [] };
+    var h = hoy(), ps = S.data.properties, total = 0, cobrado = 0, g = { bad: [], warn: [], deal: [], ok: [], none: [] };
     ps.forEach(function (p) {
-      if (!p.now) { g.none.push(p); return; }
-      total += p.now.rent; if (p.now.paidOn) cobrado += p.now.rent; g[est(p, p.now).k].push(p);
+      var ms = p.months.filter(function (mo) { return mo.ym === h.ym; });
+      if (!ms.length) g.none.push({ p: p, mo: null });
+      ms.forEach(function (mo) { total += mo.rent; if (mo.paidOn) cobrado += mo.rent; g[est(p, mo).k].push({ p: p, mo: mo }); });
     });
     var head = '<header class="stack"><h1>' + mes(h.ym, true) + ' ' + h.y + '</h1>' +
       (S.data.carteras.length > 1 ? '<p class="muted">Alquileres de ' + esc(S.data.cartera.ownerName) + '</p>' : '') + '</header>';
     if (!ps.length) return head + vacio();
     function grupo(titulo, arr) {
       if (!arr.length) return '';
-      return '<section class="stack"><h2>' + titulo + ' (' + arr.length + ')</h2><div class="list">' + arr.map(function (p) {
-        var ant = deuda(p).filter(function (mo) { return mo.ym < h.ym; }).length;
-        var pill = p.now ? '<span class="pill ' + est(p, p.now).k + '">' + est(p, p.now).label + '</span>' : '';
-        return fila(p, esc(p.tenant) + (pill || ant ? '<br>' : '') + pill +
-          (ant ? ' <span class="pill bad">' + (p.now ? '+ ' : '') + nMeses(ant) + ' sin pagar</span>' : ''), p.now ? eur(p.now.rent) : '');
+      return '<section class="stack"><h2>' + titulo + ' (' + arr.length + ')</h2><div class="list">' + arr.map(function (x) {
+        var p = x.p, mo = x.mo;
+        if (!mo) return fila(p, 'Sin inquilino este mes', '', null);
+        var e = est(p, mo), ant = deuda(p).filter(function (m2) { return m2.c === mo.c && m2.ym < h.ym; }).length;
+        return fila(p, esc(mo.c.tenant) + (mo.days ? ' · ' + dias(mo.days) : '') + '<br><span class="pill ' + e.k + '">' + e.label + '</span>' +
+          (ant ? ' <span class="pill bad">+ ' + nMeses(ant) + ' sin pagar</span>' : ''), eur(mo.rent), mo);
       }).join('') + '</div></section>';
     }
+    var acs = Object.keys(S.ags).map(function (id) { return S.ags[id]; }).filter(function (a) { var e = estAc(a); return !e.done && !a.brokenAt; });
     var pct = total ? Math.round(cobrado / total * 100) : 0;
     return head + '<section class="summary" aria-label="Resumen del mes"><p class="muted">Cobrado este mes</p>' +
       '<p class="big">' + eur(cobrado) + '</p><div class="bar"><span style="width:' + pct + '%"></span></div>' +
       '<p>Faltan <b>' + eur(total - cobrado) + '</b> de ' + eur(total) + '</p>' +
-      '<button class="btn" data-act="tab" data-tab="impagos">Ver impagos por inmueble</button></section>' +
-      grupo('Retrasados', g.bad) + grupo('Pendientes', g.warn) + grupo('Pagados', g.ok) + grupo('Sin inquilino ahora', g.none);
+      '<button class="btn" data-act="tab" data-tab="impagos">Ver impagos</button></section>' +
+      grupo('Retrasados', g.bad) + grupo('Pendientes', g.warn) + grupo('En acuerdo de pago', g.deal) + grupo('Pagados', g.ok) + grupo('Sin inquilino ahora', g.none) +
+      (acs.length ? '<section class="stack"><h2>Cuotas de acuerdos de pago (' + acs.length + ')</h2><div class="list">' + acs.map(filaAcuerdo).join('') + '</div></section>' : '');
+  }
+  function filaAcuerdo(a) {
+    var e = estAc(a);
+    return '<button class="row" data-act="acuerdo" data-id="' + a.p.id + '" data-aid="' + a.id + '"><span class="dot ' + e.k + '">' + ICON[e.k === 'ok' ? 'ok' : e.k === 'bad' ? 'bad' : 'deal'] + '</span>' +
+      '<span><span class="t">' + esc(a.c.tenant) + '</span><br><span class="s">' + esc(nom(a.p)) + ' · cuota de ' + eur(a.extra) + '<br><span class="pill ' + e.k + '">' + e.label + '</span></span></span>' +
+      '<span class="amt">' + eur(e.left) + '</span></button>';
   }
 
   /* ---------- impagos ---------- */
   function vImpagos() {
-    var con = [], sin = [], total = 0, meses = 0, facturas = 0;
+    var lista = [], sin = [], total = 0;
     S.data.properties.forEach(function (p) {
-      var d = deuda(p), u = sinPagar(p.id), t = suma(d, 'rent') + suma(u, 'amount');
-      if (t) { con.push({ p: p, d: d, u: u, t: t }); total += t; meses += d.length; facturas += u.length; } else sin.push(p);
+      var tiene = false;
+      p.contracts.forEach(function (c) {
+        var d = deuda(p).filter(function (mo) { return mo.c === c; });
+        var u = sinPagar(p.id).filter(function (x) { return x.contractId === c.id; });
+        var ags = c.agreements.filter(function (a) { return !estAc(a).done; });
+        var t = suma(d, 'rent') + suma(u, 'amount') + ags.reduce(function (acc, a) { return acc + estAc(a).left; }, 0);
+        if (cent(t) > 0) { lista.push({ p: p, c: c, d: d, u: u, ags: ags, t: t }); total += t; tiene = true; }
+      });
+      if (!tiene) sin.push(p);
     });
-    con.sort(function (a, b) { return b.t - a.t; });
+    lista.sort(function (a, b) { return b.t - a.t; });
     var h = '<header><h1>Impagos</h1></header>';
     if (!S.data.properties.length) return h + vacio();
-    if (!con.length) {
-      h += '<section class="status-card ok"><span class="dot">' + ICON.ok + '</span><div><p class="lbl">Todo cobrado</p><p>Ningún inmueble tiene meses ni facturas sin pagar.</p></div></section>';
+    if (!lista.length) {
+      h += '<section class="status-card ok"><span class="dot">' + ICON.ok + '</span><div><p class="lbl">Todo cobrado</p><p>Nadie debe alquiler ni facturas.</p></div></section>';
     } else {
       h += '<section class="summary" aria-label="Total sin cobrar"><p class="muted">Le deben en total</p><p class="big red">' + eur(total) + '</p>' +
-        '<p><b>' + con.length + (con.length === 1 ? ' inmueble' : ' inmuebles') + '</b> · <b>' + nMeses(meses) + '</b> de alquiler' +
-        (facturas ? ' · <b>' + facturas + (facturas === 1 ? ' factura' : ' facturas') + '</b> de suministros' : '') + '</p></section>' +
-        '<section class="stack">' + con.map(function (x) {
-          var p = x.p;
-          return '<article class="card"><h2>' + esc(nom(p)) + '</h2><p class="muted">' + esc(p.tenant) + (p.alias ? ' · ' + esc(p.address) : '') + '</p>' +
+        '<p><b>' + lista.length + (lista.length === 1 ? ' persona' : ' personas') + '</b> con deudas</p></section>' +
+        '<section class="stack">' + lista.map(function (x) {
+          var p = x.p, c = x.c, fuera = !c.active && c.endDate && c.endDate < S.data.today;
+          return '<article class="card"><h2>' + esc(c.tenant) + '</h2><p class="muted">' + esc(nom(p)) +
+            (fuera ? ' · <b>ya no vive aquí</b> (salió el ' + fechaC(c.endDate) + ')' : '') + '</p>' +
             '<p class="owe">Debe <b>' + eur(x.t) + '</b></p>' +
-            (p.months.length ? '<div class="months">' + p.months.slice(-6).map(function (mo) {
-              var k = est(p, mo).k;
-              return '<div class="mcell ' + k + '" title="' + mes(mo.ym, true) + '">' + ICON[k] + '<span>' + MESES[mo.ym % 12].slice(0, 3) + '</span></div>';
-            }).join('') + '</div>' : '') +
             x.d.map(function (mo) {
-              return '<div class="kv"><span><b>Alquiler de ' + mes(mo.ym) + '</b><br>' + eur(mo.rent) + (mo.c !== p.cur ? ' · ' + esc(mo.c.tenant) : '') + '</span>' +
-                (can('pagos') ? '<button class="btn mini" data-act="cobrar" data-id="' + p.id + '" data-cid="' + mo.c.id + '" data-ym="' + mo.ym + '">Cobrado</button>' : '') + '</div>';
+              return '<div class="kv"><span><b>Alquiler de ' + mes(mo.ym) + '</b><br>' + eur(mo.rent) + (mo.days ? ' (' + dias(mo.days) + ')' : '') + '</span>' +
+                (can('pagos') ? '<button class="btn mini" data-act="cobrar" data-id="' + p.id + '" data-cid="' + c.id + '" data-ym="' + mo.ym + '">Cobrado</button>' : '') + '</div>';
             }).join('') +
             x.u.map(function (u) {
-              var c = contrato(p, u.contractId);
-              return '<div class="kv"><span><b>Factura de ' + esc(tipo(u).toLowerCase()) + '</b><br>' + eur(u.amount) + ' · ' + fechaC(u.billDate) +
-                (c && c !== p.cur ? ' · ' + esc(c.tenant) : '') + '</span>' +
+              return '<div class="kv"><span><b>Factura de ' + esc(tipo(u).toLowerCase()) + '</b><br>' + eur(u.amount) + ' · ' + fechaC(u.billDate) + '</span>' +
                 (can('suministros') ? '<button class="btn mini" data-act="factura-pagada" data-id="' + u.id + '">Pagada</button>' : '') + '</div>';
             }).join('') +
+            x.ags.map(function (a) {
+              var e = estAc(a);
+              return '<div class="kv"><span><b>Acuerdo de pago</b> · quedan ' + eur(e.left) + '<br><span class="pill ' + e.k + '">' + e.label + '</span></span>' +
+                '<button class="btn mini" data-act="acuerdo" data-id="' + p.id + '" data-aid="' + a.id + '">Ver</button></div>';
+            }).join('') +
+            ((x.d.some(function (mo) { return mo.ym < hoy().ym; }) || x.u.length) && can('pagos') ? '<button class="btn primary" data-act="nuevo-acuerdo" data-id="' + p.id + '" data-cid="' + c.id + '">Hacer un acuerdo de pago</button>' : '') +
             '<button class="btn" data-act="abrir" data-id="' + p.id + '">Ver ficha y contactar</button></article>';
         }).join('') + '</section>';
     }
@@ -261,6 +306,7 @@
     var partes = [];
     if (d.length) partes.push('el alquiler de ' + listaMeses(d) + ' (' + eur(suma(d, 'rent')) + ')');
     if (fu.length) partes.push((fu.length === 1 ? 'una factura' : fu.length + ' facturas') + ' de suministros (' + eur(suma(fu, 'amount')) + ')');
+    if (c) c.agreements.forEach(function (a) { var ea = estAc(a); if (!ea.done && !a.brokenAt && ea.thisMonth) partes.push('la cuota del acuerdo de pago (' + eur(ea.thisMonth) + ')'); });
     var msg = partes.length ? 'Hola ' + c.tenant.split(' ')[0] + ', le recuerdo que tiene pendiente de pago ' + partes.join(' y ') + ' de ' + p.address + '. Gracias.' : '';
     h = '<button class="back" data-act="volver">‹ Volver</button>' +
       '<header class="stack"><h1>' + esc(nom(p)) + '</h1><p class="muted">' + esc(p.tenant) + (p.alias ? ' · ' + esc(p.address) : '') + '</p></header>';
@@ -291,12 +337,27 @@
     if (pagos && p.months.length) {
       h += '<section class="card"><h2>Mes a mes</h2>' + p.months.slice().reverse().slice(0, 12).map(function (m2) {
         var s = est(p, m2);
-        return '<div class="kv"><span><b>' + mes(m2.ym, true) + '</b> · ' + eur(m2.rent) + (m2.c !== c ? ' · ' + esc(m2.c.tenant) : '') +
+        return '<div class="kv"><span><b>' + mes(m2.ym, true) + '</b> · ' + eur(m2.rent) + (m2.days ? ' (' + dias(m2.days) + ')' : '') +
+          (m2.custom ? ' (corregido)' : '') + (m2.c !== c ? ' · ' + esc(m2.c.tenant) : '') +
           '<br><span class="pill ' + s.k + '">' + (m2.paidOn ? 'Pagó el ' + fecha(m2.paidOn) : s.label) + '</span></span>' +
-          (can('pagos') ? (m2.paidOn
+          (can('pagos') && !m2.agreementId ? (m2.paidOn
             ? '<button class="btn mini plain" data-act="descobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Quitar</button>'
             : '<button class="btn mini" data-act="cobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Cobrado</button>') : '') + '</div>';
-      }).join('') + '</section>';
+      }).join('') + (can('pagos') ? '<button class="btn plain" data-act="importe" data-id="' + id + '">Corregir el importe de un mes</button>' : '') + '</section>';
+      var conAc = p.contracts.filter(function (k) { return k.agreements.length; }), conDeuda = p.contracts.filter(function (k) {
+        return deuda(p).some(function (m3) { return m3.c === k && m3.ym < hoy().ym; }) || sinPagar(id).some(function (u) { return u.contractId === k.id; });
+      });
+      if (conAc.length || conDeuda.length) {
+        h += '<section class="card"><h2>Acuerdos de pago</h2>' + conAc.map(function (k) {
+          return k.agreements.map(function (a) {
+            var ea = estAc(a);
+            return '<div class="kv"><span><b>' + esc(k.tenant) + '</b> · quedan ' + eur(ea.left) + '<br><span class="pill ' + ea.k + '">' + ea.label + '</span></span>' +
+              '<button class="btn mini" data-act="acuerdo" data-id="' + id + '" data-aid="' + a.id + '">Ver</button></div>';
+          }).join('');
+        }).join('') + (can('pagos') ? conDeuda.map(function (k) {
+          return '<button class="btn" data-act="nuevo-acuerdo" data-id="' + id + '" data-cid="' + k.id + '">Hacer un acuerdo de pago con ' + esc(k.tenant.split(' ')[0]) + '</button>';
+        }).join('') : '') + '</section>';
+      }
     }
     if (p.utilities && lv('suministros') >= 1) {
       var us = sinPagar(id);
@@ -306,7 +367,12 @@
           (cu && cu !== c ? ' · ' + esc(cu.tenant) : '') + (u.sentAt ? '' : ' · sin enviar') + '</span></span>' +
           (can('suministros') ? '<button class="btn mini" data-act="factura-pagada" data-id="' + u.id + '">Pagada</button>' : '') + '</div>';
       }).join('') : '<p class="muted">Ninguna.</p>') +
-        (can('suministros') ? '<button class="btn" data-act="nueva-factura" data-id="' + id + '">Subir una factura</button>' : '') + '</section>';
+        (function () {
+          var r = resumenFacturas(S.data.utilities.filter(function (x) { return x.propertyId === id; }));
+          return '<p class="muted">En ' + hoy().y + ': ' + r.n + (r.n === 1 ? ' factura' : ' facturas') + ' · ' + eur(r.anio) + ' · cobrado ' + eur(r.pagado) + '</p>';
+        })() +
+        (can('suministros') ? '<button class="btn" data-act="nueva-factura" data-id="' + id + '">Subir una factura</button>' : '') +
+        '<button class="btn plain" data-act="fac-prop" data-id="' + id + '">Ver todas las facturas de este inmueble</button></section>';
     }
     if (lv('averias') >= 1) {
       h += '<section class="card"><h2>Averías sin resolver</h2>' + (abiertas.length ? abiertas.map(function (a) {
@@ -361,6 +427,8 @@
     return '<label class="f">Nombre del inquilino<input type="text" id="con-inq" maxlength="80" required' + val('tenant') + '></label>' +
       '<label class="f">Teléfono del inquilino<small>Para llamarle y enviarle las facturas por WhatsApp.</small>' +
       '<input type="tel" id="con-tel" inputmode="tel" maxlength="30"' + val('phone') + '></label>' +
+      '<label class="f">Correo del inquilino<small>Si quiere enviarle las facturas también por correo.</small>' +
+      '<input type="email" id="con-mail" inputmode="email" autocapitalize="none" maxlength="120"' + val('email') + '></label>' +
       '<label class="f">Renta al mes (€)<input type="number" id="con-renta" inputmode="decimal" min="1" step="0.01" required' + val('rent') + '></label>' +
       '<label class="f">Fecha en que empieza el contrato<input type="date" id="con-inicio" required value="' + (c ? c.startDate : S.data.today) + '"></label>' +
       '<label class="f">Fecha en que termina<small>Déjela vacía si todavía no se sabe.</small><input type="date" id="con-fin"' + val('endDate') + '></label>' +
@@ -413,18 +481,46 @@
     var p = prop(u.propertyId), c = contrato(p, u.contractId);
     var txt = 'Hola ' + c.tenant.split(' ')[0] + ', le envío la factura de ' + tipo(u).toLowerCase() + ' de ' + p.address + ' con fecha ' + fechaC(u.billDate) +
       ': ' + eur(u.amount) + '. Puede verla aquí: ' + location.origin + u.url + ' Queda pendiente de pago. Gracias.';
-    return { txt: txt, href: 'https://wa.me/' + telLimpio(c.phone) + '?text=' + encodeURIComponent(txt), c: c };
+    var asunto = 'Factura de ' + tipo(u).toLowerCase() + ' · ' + p.address + ' · ' + fechaC(u.billDate);
+    return {
+      txt: txt, c: c, href: 'https://wa.me/' + telLimpio(c.phone) + '?text=' + encodeURIComponent(txt),
+      mail: 'mailto:' + encodeURIComponent(c.email || '') + '?subject=' + encodeURIComponent(asunto) + '&body=' + encodeURIComponent(txt)
+    };
+  }
+  /* Botones para enviar una factura: WhatsApp, correo y el archivo de verdad (menú de compartir del móvil). */
+  function botonesEnvio(u, fuerte) {
+    var w = waFactura(u);
+    return '<div class="btn-row"><a class="btn' + (fuerte ? ' good' : '') + '" target="_blank" rel="noopener" href="' + esc(w.href) + '" data-act="enviada" data-id="' + u.id + '">WhatsApp</a>' +
+      '<a class="btn' + (fuerte ? ' good' : '') + '" href="' + esc(w.mail) + '" data-act="enviada" data-id="' + u.id + '">Correo</a></div>' +
+      (navigator.share && navigator.canShare ? '<button class="btn" data-act="compartir-pdf" data-id="' + u.id + '">Enviar el PDF como archivo</button>' : '');
+  }
+  function resumenFacturas(us) {
+    var y = String(hoy().y), anio = us.filter(function (u) { return u.billDate.slice(0, 4) === y; });
+    return {
+      pend: suma(us.filter(function (u) { return !u.paidOn && !u.agreementId; }), 'amount'),
+      acuerdo: suma(us.filter(function (u) { return !u.paidOn && u.agreementId; }), 'amount'),
+      anio: suma(anio, 'amount'), pagado: suma(anio.filter(function (u) { return u.paidOn; }), 'amount'), n: anio.length,
+      tipos: anio.reduce(function (acc, u) { var t = tipo(u); acc[t] = (acc[t] || 0) + u.amount; return acc; }, {})
+    };
   }
   function vFacturas() {
-    var us = S.data.utilities, pend = us.filter(function (u) { return !u.paidOn; }), hechas = us.filter(function (u) { return u.paidOn; });
-    var hay = S.data.properties.some(function (p) { return p.utilities; }), edit = can('suministros');
+    var conSum = S.data.properties.filter(function (p) { return p.utilities; }), edit = can('suministros'), y = hoy().y;
+    if (S.facProp && !prop(S.facProp)) S.facProp = 0;
+    var us = S.data.utilities.filter(function (u) { return !S.facProp || u.propertyId === S.facProp; });
+    var pend = us.filter(function (u) { return !u.paidOn; }), hechas = us.filter(function (u) { return u.paidOn; });
     function item(u) {
       var p = prop(u.propertyId), w = waFactura(u);
+      var ac = u.agreementId ? S.ags[u.agreementId] : null;
+      if (u.agreementId) {
+        return '<article class="card"><p><span class="pill deal">En acuerdo de pago</span></p><h2>' + esc(tipo(u)) + ' · ' + eur(u.amount) + '</h2>' +
+          '<p class="muted">' + esc(nom(p)) + ' · ' + esc(w.c.tenant) + ' · factura del ' + fechaC(u.billDate) + '</p>' +
+          '<div class="btn-row"><a class="btn" target="_blank" rel="noopener" href="' + u.url + '">Ver el PDF</a>' +
+          (ac ? '<button class="btn" data-act="acuerdo" data-id="' + p.id + '" data-aid="' + ac.id + '">Ver el acuerdo</button>' : '<span></span>') + '</div></article>';
+      }
       return '<article class="card"><p><span class="pill ' + (u.paidOn ? 'ok' : 'bad') + '">' + (u.paidOn ? 'Pagada el ' + fecha(u.paidOn) : 'Pendiente de pago') + '</span> ' +
         (u.paidOn ? '' : '<span class="pill ' + (u.sentAt ? 'ok' : 'warn') + '">' + (u.sentAt ? 'Enviada el ' + fecha(u.sentAt) : 'Sin enviar') + '</span>') + '</p>' +
         '<h2>' + esc(tipo(u)) + ' · ' + eur(u.amount) + '</h2><p class="muted">' + esc(nom(p)) + ' · ' + esc(w.c.tenant) + ' · factura del ' + fechaC(u.billDate) + '</p>' +
-        (u.paidOn ? '' : '<a class="btn' + (u.sentAt ? '' : ' primary') + '" target="_blank" rel="noopener" href="' + esc(w.href) + '" data-act="enviada" data-id="' + u.id + '">' +
-          (u.sentAt ? 'Volver a enviar por WhatsApp' : 'Enviar por WhatsApp') + '</a>') +
+        (u.paidOn ? '' : botonesEnvio(u, !u.sentAt)) +
         '<div class="btn-row"><a class="btn" target="_blank" rel="noopener" href="' + u.url + '">Ver el PDF</a>' +
         (edit ? (u.paidOn ? '<button class="btn plain" data-act="factura-impagada" data-id="' + u.id + '">Quitar el pago</button>'
           : '<button class="btn" data-act="factura-pagada" data-id="' + u.id + '">Ya la ha pagado</button>') : '<span></span>') + '</div>' +
@@ -434,18 +530,46 @@
           : '<button class="btn plain" data-act="borrar-factura" data-id="' + u.id + '">Borrar la factura</button>') : '') + '</article>';
     }
     var h = '<header class="stack"><h1>Facturas</h1><p class="muted">Luz, agua y otros gastos que paga el inquilino.</p></header>';
-    if (!hay) {
+    if (!conSum.length) {
       return h + '<section class="card"><h2>Ningún inmueble las tiene activadas</h2><p>Para subir facturas, abra el inmueble, pulse «Cambiar estos datos» y marque «Necesito facturas de suministros».</p></section>';
     }
-    return h + (edit ? '<button class="btn primary" data-act="nueva-factura">+ Subir una factura</button>' : '') +
-      '<section class="stack"><h2>Pendientes de pago (' + pend.length + ')</h2>' + (pend.length ? pend.map(item).join('') : '<p class="muted">No hay facturas pendientes.</p>') + '</section>' +
+    h += (edit ? '<button class="btn primary" data-act="nueva-factura" data-id="' + (S.facProp || '') + '">+ Subir una factura</button>' : '') +
+      '<label class="f">Ver facturas de<select id="fac-filtro"><option value="0">Todos los inmuebles</option>' + conSum.map(function (p) {
+        return '<option value="' + p.id + '"' + (p.id === S.facProp ? ' selected' : '') + '>' + esc(nom(p)) + '</option>';
+      }).join('') + '</select></label>';
+    if (S.facProp) {
+      var r = resumenFacturas(us);
+      h += '<section class="card"><h2>' + esc(nom(prop(S.facProp))) + '</h2>' +
+        '<div class="kv"><span>Pendiente de cobrar</span><b class="r' + (r.pend ? ' red' : '') + '">' + eur(r.pend) + '</b></div>' +
+        (r.acuerdo ? '<div class="kv"><span>En acuerdo de pago</span><b class="r">' + eur(r.acuerdo) + '</b></div>' : '') +
+        '<div class="kv"><span>Facturas de ' + y + '</span><b class="r">' + r.n + ' · ' + eur(r.anio) + '</b></div>' +
+        Object.keys(r.tipos).map(function (t) { return '<div class="kv"><span>· ' + esc(t) + '</span><b class="r">' + eur(r.tipos[t]) + '</b></div>'; }).join('') +
+        '<div class="kv"><span>Cobrado de ' + y + '</span><b class="r">' + eur(r.pagado) + '</b></div></section>';
+    } else {
+      h += '<section class="card"><h2>Por inmueble</h2>' + conSum.map(function (p) {
+        var r = resumenFacturas(S.data.utilities.filter(function (u) { return u.propertyId === p.id; }));
+        return '<button class="kv link" data-act="fac-prop" data-id="' + p.id + '"><span><b>' + esc(nom(p)) + '</b><br><span class="muted">' + y + ': ' + eur(r.anio) + ' · cobrado ' + eur(r.pagado) + '</span></span>' +
+          '<span class="pill ' + (r.pend ? 'bad' : 'ok') + '">' + (r.pend ? 'Debe ' + eur(r.pend) : 'Al día') + '</span></button>';
+      }).join('') + '</section>';
+    }
+    return h + '<section class="stack"><h2>Pendientes de pago (' + pend.length + ')</h2>' + (pend.length ? pend.map(item).join('') : '<p class="muted">No hay facturas pendientes.</p>') + '</section>' +
       (hechas.length ? '<section class="stack"><h2>Pagadas (' + hechas.length + ')</h2>' + hechas.slice(0, 30).map(item).join('') + '</section>' : '');
+  }
+  function vDoc() {
+    if (S.doc) return '<div class="kv"><span><b>' + esc(S.doc.name) + '</b><br><span class="muted">PDF</span></span><button class="btn mini plain" type="button" data-act="doc-quitar">Quitar</button></div>';
+    return S.pages.map(function (pg, i) {
+      return '<div class="kv"><span class="pg"><img src="' + pg.url + '" alt=""><b>Página ' + (i + 1) + '</b></span>' +
+        '<button class="btn mini plain" type="button" data-act="pagina-quitar" data-i="' + i + '">Quitar</button></div>';
+    }).join('');
   }
   function vNuevaFactura(sel) {
     var ps = S.data.properties.filter(function (p) { return p.utilities; });
     return '<button class="back" data-act="volver">‹ Volver</button><header><h1>Subir una factura</h1></header>' +
       '<form id="form-factura" class="stack-lg">' +
-      '<label class="f">Archivo PDF de la factura<input type="file" id="fac-pdf" accept="application/pdf,.pdf" required></label>' +
+      '<section class="card"><h2>La factura</h2><p class="muted">Haga una foto al papel (una por página) o elija el PDF o las fotos que ya tenga en el móvil.</p>' +
+      '<div id="doc-lista">' + vDoc() + '</div>' +
+      '<label class="btn primary">' + (S.pages.length ? 'Hacer foto de otra página' : 'Hacer una foto') + '<input type="file" id="fac-foto" accept="image/*" capture="environment" hidden></label>' +
+      '<label class="btn">Elegir PDF o fotos<input type="file" id="fac-archivo" accept="application/pdf,.pdf,image/*" multiple hidden></label></section>' +
       '<label class="f">¿De qué inmueble es?<select id="fac-piso">' + ps.map(function (p) {
         return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(nom(p)) + '</option>';
       }).join('') + '</select></label>' +
@@ -459,14 +583,121 @@
   function vFacturaOk(s) {
     var u = S.data.utilities.filter(function (x) { return x.id === s.uid; })[0];
     if (!u) return vFacturas();
-    var w = waFactura(u), compartir = navigator.share && navigator.canShare;
+    var w = waFactura(u);
     return '<button class="back" data-act="volver">‹ Volver a Facturas</button><header class="stack"><h1>Factura guardada</h1>' +
       '<p>Queda anotada como <b>pendiente de pago</b> por ' + esc(w.c.tenant) + ': ' + esc(tipo(u).toLowerCase()) + ', ' + eur(u.amount) + '.</p></header>' +
-      (w.c.phone ? '' : '<p class="msg">No tiene apuntado el teléfono de este inquilino: WhatsApp le pedirá que elija a quién enviarla.</p>') +
-      '<a class="btn good" target="_blank" rel="noopener" href="' + esc(w.href) + '" data-act="enviada" data-id="' + u.id + '">Enviar por WhatsApp a ' + esc(w.c.tenant.split(' ')[0]) + '</a>' +
-      '<p class="muted">Se abre WhatsApp con este mensaje ya escrito. Solo tiene que pulsar Enviar:</p><p class="msg">' + esc(w.txt) + '</p>' +
-      (compartir ? '<button class="btn" data-act="compartir-pdf" data-id="' + u.id + '">Enviar el PDF como archivo</button>' : '') +
+      '<h2>Envíesela a ' + esc(w.c.tenant.split(' ')[0]) + '</h2>' +
+      (w.c.phone ? '' : '<p class="msg">No tiene apuntado su teléfono: WhatsApp le pedirá que elija a quién enviarla.</p>') +
+      (w.c.email ? '' : '<p class="msg">No tiene apuntado su correo: puede añadirlo en la ficha del inmueble, en «Inquilinos».</p>') +
+      botonesEnvio(u, true) +
+      '<p class="muted">WhatsApp y Correo abren el mensaje ya escrito, con un enlace a la factura. «Enviar el PDF como archivo» adjunta el documento: elija WhatsApp o su correo en el menú que aparece.</p>' +
+      '<p class="msg">' + esc(w.txt) + '</p>' +
       '<a class="btn plain" target="_blank" rel="noopener" href="' + u.url + '">Ver el PDF</a>';
+  }
+
+  /* ---------- acuerdos de pago ---------- */
+  function vNuevoAcuerdo(sc) {
+    var p = prop(sc.id), c = contrato(p, sc.cid), h = hoy();
+    var d = deuda(p).filter(function (mo) { return mo.c === c && mo.ym < h.ym; }), u = sinPagar(p.id).filter(function (x) { return x.contractId === c.id; });
+    var total = suma(d, 'rent') + suma(u, 'amount'), actual = deuda(p).filter(function (mo) { return mo.c === c && mo.ym === h.ym; })[0];
+    if (!cent(total)) return '<button class="back" data-act="volver">‹ Volver</button><p class="msg">' + esc(c.tenant) + ' no tiene deudas pendientes.</p>';
+    return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Acuerdo de pago</h1>' +
+      '<p class="muted">' + esc(c.tenant) + ' · ' + esc(nom(p)) + '</p></header>' +
+      '<section class="card"><h2>Lo que debe hoy: ' + eur(total) + '</h2>' +
+      d.map(function (mo) { return '<div class="kv"><span>Alquiler de ' + mes(mo.ym) + '</span><b class="r">' + eur(mo.rent) + '</b></div>'; }).join('') +
+      u.map(function (x) { return '<div class="kv"><span>Factura de ' + esc(tipo(x).toLowerCase()) + ' del ' + fechaC(x.billDate) + '</span><b class="r">' + eur(x.amount) + '</b></div>'; }).join('') +
+      '<p class="muted">Todo esto pasa al acuerdo y deja de aparecer suelto en Impagos.' +
+      (actual ? ' La renta de ' + mes(h.ym) + ' (' + eur(actual.rent) + ') no entra: se cobra aparte, como siempre.' : '') + '</p></section>' +
+      '<form id="form-acuerdo" class="stack-lg">' +
+      '<label class="f">Deuda que se paga con el acuerdo (€)<small>Normalmente lo que debe. Puede cambiarlo si han acordado otra cantidad.</small>' +
+      '<input type="number" id="ac-total" inputmode="decimal" min="0.01" step="0.01" required value="' + (cent(total) / 100) + '"></label>' +
+      '<label class="f">¿Cuánto pagará al mes en total? (€)<small>' + (vive(c, h.ym + 1) || vive(c, h.ym)
+        ? 'Incluida la renta. Lo que pase de la renta va a la deuda.' : esc(c.tenant.split(' ')[0]) + ' ya no vive aquí: todo lo que pague va a la deuda.') + '</small>' +
+      '<input type="number" id="ac-mensual" inputmode="decimal" min="0.01" step="0.01" required></label>' +
+      '<label class="f">¿Desde qué mes?<select id="ac-inicio"><option value="' + h.ym + '">' + mes(h.ym, true) + ' (este mes)</option>' +
+      '<option value="' + (h.ym + 1) + '">' + mes(h.ym + 1, true) + ' (el que viene)</option></select></label>' +
+      '<p class="msg" id="ac-prev">Escriba cuánto pagará al mes y aquí verá cuánto va a la deuda y cuándo termina.</p>' +
+      '<label class="f">Notas (si quiere)<textarea id="ac-nota" maxlength="300" placeholder="Por ejemplo: lo hablamos por teléfono el día 20"></textarea></label>' +
+      '<button class="btn primary" type="submit">Guardar el acuerdo</button></form>';
+  }
+  /* Vista previa del acuerdo mientras se escribe. */
+  function previa() {
+    var el = document.getElementById('ac-prev'); if (!el || !S.screen) return;
+    var c = contrato(prop(S.screen.id), S.screen.cid), start = Number(document.getElementById('ac-inicio').value);
+    var total = cent(Number(document.getElementById('ac-total').value)), mensual = cent(Number(document.getElementById('ac-mensual').value));
+    var renta = cent(rentaEn(c, start)), extra = mensual - renta;
+    if (!total || !mensual) { el.textContent = 'Escriba cuánto pagará al mes y aquí verá cuánto va a la deuda y cuándo termina.'; return; }
+    if (extra <= 0) { el.textContent = 'Tiene que ser más que la renta (' + eur(renta / 100) + ') para que la deuda vaya bajando.'; return; }
+    var n = Math.ceil(total / extra), ultima = total - (n - 1) * extra;
+    el.innerHTML = 'Cada mes: ' + (renta ? eur(renta / 100) + ' de renta + ' : '') + '<b>' + eur(extra / 100) + ' para la deuda</b>.<br>' +
+      'Terminará de pagarla en <b>' + mes(start + n - 1) + '</b> (' + nMeses(n) + ')' + (ultima !== extra ? '; la última cuota será de ' + eur(ultima / 100) : '') + '.';
+  }
+  function textoAcuerdo(a) {
+    var e = estAc(a), renta = rentaEn(a.c, a.startYm);
+    return 'Hola ' + a.c.tenant.split(' ')[0] + ', como hemos acordado, la deuda de ' + eur(a.total) + ' de ' + a.p.address + ' se pagará con ' + eur(a.extra) + ' al mes' +
+      (renta ? ' además de la renta (' + eur(renta + a.extra) + ' en total cada mes)' : '') + ', desde ' + mes(a.startYm) + ' hasta ' + mes(e.endYm) + '.' +
+      (e.paid ? ' Lleva pagados ' + eur(e.paid) + ' y quedan ' + eur(e.left) + '.' : '') + ' Gracias.';
+  }
+  function vAcuerdo(sc) {
+    var a = S.ags[sc.aid];
+    if (!a) return vPagos();
+    var e = estAc(a), renta = rentaEn(a.c, a.startYm), edit = can('pagos'), tel = telLimpio(a.c.phone);
+    var meses = a.p.months.filter(function (mo) { return mo.agreementId === a.id; });
+    var facts = S.data.utilities.filter(function (u) { return u.agreementId === a.id; });
+    var h = '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Acuerdo de pago</h1>' +
+      '<p class="muted">' + esc(a.c.tenant) + ' · ' + esc(nom(a.p)) + '</p></header>' +
+      '<section class="status-card ' + e.k + '"><span class="dot">' + ICON[e.k === 'warn' ? 'warn' : e.k] + '</span><div><p class="lbl">' + esc(e.label) + '</p>' +
+      '<p>Pagado ' + eur(e.paid) + ' de ' + eur(a.total) + '</p></div></section>' +
+      '<div class="bar"><span style="width:' + Math.round(e.paid / a.total * 100) + '%"></span></div>';
+    if (edit && !e.done) {
+      h += '<form id="form-abono" class="card stack"><h2>Anotar un pago del acuerdo</h2>' +
+        '<label class="f">Cantidad (€)<small>Solo la parte de la deuda. La renta del mes se anota aparte, en Pagos.</small>' +
+        '<input type="number" id="ab-importe" inputmode="decimal" min="0.01" step="0.01" required value="' + (cent(e.thisMonth || Math.min(a.extra, e.left)) / 100) + '"></label>' +
+        '<label class="f">Fecha<input type="date" id="ab-fecha" required value="' + S.data.today + '"></label>' +
+        '<button class="btn good" type="submit">' + ICON.ok + ' Ha pagado</button></form>';
+    }
+    h += '<section class="card"><h2>Condiciones</h2>' +
+      '<div class="kv"><span>Deuda del acuerdo</span><b class="r">' + eur(a.total) + '</b></div>' +
+      '<div class="kv"><span>Cuota para la deuda</span><b class="r">' + eur(a.extra) + ' al mes</b></div>' +
+      (renta ? '<div class="kv"><span>Paga al mes en total</span><b class="r">' + eur(renta + a.extra) + '</b></div>' : '') +
+      '<div class="kv"><span>Desde</span><b class="r">' + mes(a.startYm, true) + '</b></div>' +
+      '<div class="kv"><span>Hasta</span><b class="r">' + mes(e.endYm, true) + ' (' + nMeses(e.cuotas) + ')</b></div>' +
+      '<div class="kv"><span>Queda por pagar</span><b class="r">' + eur(e.left) + '</b></div>' +
+      (a.note ? '<p class="msg">' + esc(a.note) + '</p>' : '') + '</section>' +
+      '<section class="card"><h2>Pagos del acuerdo</h2>' + (a.payments.length ? a.payments.slice().reverse().map(function (x) {
+        return '<div class="kv"><span><b>' + eur(x.amount) + '</b><br><span class="muted">' + fecha(x.paidOn) + '</span></span>' +
+          (edit ? '<button class="btn mini plain" data-act="quitar-abono" data-aid="' + a.id + '" data-pid="' + x.id + '">Quitar</button>' : '') + '</div>';
+      }).join('') : '<p class="muted">Todavía no ha pagado ninguna cuota.</p>') + '</section>' +
+      '<section class="card"><h2>Qué deuda incluye</h2>' +
+      meses.map(function (mo) { return '<div class="kv"><span>Alquiler de ' + mes(mo.ym) + '</span><b class="r">' + eur(mo.rent) + '</b></div>'; }).join('') +
+      facts.map(function (u) { return '<div class="kv"><span>Factura de ' + esc(tipo(u).toLowerCase()) + ' del ' + fechaC(u.billDate) + '</span><b class="r">' + eur(u.amount) + '</b></div>'; }).join('') +
+      '</section>';
+    if (!e.done) {
+      h += '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + tel + '?text=' + encodeURIComponent(textoAcuerdo(a)) + '">Enviar el acuerdo por WhatsApp</a>';
+    }
+    if (edit && !e.done) {
+      h += a.brokenAt ? '<button class="btn" data-act="acuerdo-activo" data-aid="' + a.id + '">Volver a darlo por bueno</button>'
+        : '<button class="btn plain" data-act="acuerdo-roto" data-aid="' + a.id + '">Marcar como no cumplido</button>';
+    }
+    if (edit && !a.payments.length) {
+      h += S.confirm === 'a' + a.id
+        ? '<p class="err">¿Seguro? La deuda vuelve a aparecer suelta en Impagos.</p><div class="btn-row">' +
+        '<button class="btn danger" data-act="anular-acuerdo-si" data-id="' + a.p.id + '" data-aid="' + a.id + '">Sí, anularlo</button><button class="btn plain" data-act="borrar-no">No</button></div>'
+        : '<button class="btn plain" data-act="anular-acuerdo" data-aid="' + a.id + '">Anular el acuerdo (si se apuntó por error)</button>';
+    }
+    return h;
+  }
+  function vImporte(sc) {
+    var p = prop(sc.id), ms = p.months.filter(function (mo) { return !mo.agreementId; }).slice(-12).reverse();
+    return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Corregir el importe de un mes</h1>' +
+      '<p class="muted">' + esc(nom(p)) + '</p></header>' +
+      '<p class="msg">Cuando alguien entra o sale a mitad de mes, la app reparte la renta por días. Aquí puede poner otra cantidad si lo han acordado así.</p>' +
+      '<form id="form-importe" class="stack-lg"><label class="f">¿Qué mes?<select id="imp-mes">' + ms.map(function (mo) {
+        return '<option value="' + mo.c.id + ':' + mo.ym + '">' + mes(mo.ym, true) + ' · ' + esc(mo.c.tenant) + ' · ' + eur(mo.rent) + (mo.days ? ' (' + dias(mo.days) + ')' : '') + '</option>';
+      }).join('') + '</select></label>' +
+      '<label class="f">Importe nuevo (€)<small>Déjelo vacío para volver al importe que calcula la app.</small>' +
+      '<input type="number" id="imp-importe" inputmode="decimal" min="0.01" step="0.01"></label>' +
+      '<button class="btn primary" type="submit">Guardar</button></form>';
   }
 
   /* ---------- averías ---------- */
@@ -579,6 +810,9 @@
       else if (s && s.name === 'nueva-factura') h = vNuevaFactura(s.id);
       else if (s && s.name === 'factura-ok') h = vFacturaOk(s);
       else if (s && s.name === 'nueva-averia') h = vNuevaAveria(s.id);
+      else if (s && s.name === 'nuevo-acuerdo') h = vNuevoAcuerdo(s);
+      else if (s && s.name === 'acuerdo') h = vAcuerdo(s);
+      else if (s && s.name === 'importe') h = vImporte(s);
       else if (s && s.name === 'invitar') h = vInvitar(s);
       else if (s && s.name === 'invitado') h = vInvitado(s);
       else h = { pagos: vPagos, impagos: vImpagos, facturas: vFacturas, pisos: vPisos, averias: vAverias, cuenta: vCuenta }[S.tab]();
@@ -610,7 +844,25 @@
     else if (act === 'permisos') go({ name: 'invitar', uid: Number(b.getAttribute('data-uid')) });
     else if (act === 'volver') go(S.screen && S.screen.id && S.screen.name !== 'piso' ? { name: 'piso', id: S.screen.id } : null);
     else if (act === 'nueva-averia') { S.photo = null; go({ name: 'nueva-averia', id: id }); }
-    else if (act === 'nueva-factura') go({ name: 'nueva-factura', id: id });
+    else if (act === 'nueva-factura') { S.doc = null; S.pages = []; go({ name: 'nueva-factura', id: id }); }
+    else if (act === 'fac-prop') { S.facProp = id; S.tab = 'facturas'; go(null); }
+    else if (act === 'doc-quitar') { S.doc = null; pintarDoc(); }
+    else if (act === 'pagina-quitar') { S.pages.splice(Number(b.getAttribute('data-i')), 1); pintarDoc(); }
+    else if (act === 'nuevo-acuerdo') go({ name: 'nuevo-acuerdo', id: id, cid: cid });
+    else if (act === 'acuerdo') go({ name: 'acuerdo', id: id, aid: Number(b.getAttribute('data-aid')) });
+    else if (act === 'importe') go({ name: 'importe', id: id });
+    else if (act === 'quitar-abono') {
+      run(function () { return api('DELETE', '/api/agreements/' + b.getAttribute('data-aid') + '/payments/' + b.getAttribute('data-pid')); }, 'Pago quitado.');
+    }
+    else if (act === 'acuerdo-roto' || act === 'acuerdo-activo') {
+      run(function () { return api('POST', '/api/agreements/' + b.getAttribute('data-aid') + '/broken', { broken: act === 'acuerdo-roto' }); },
+        act === 'acuerdo-roto' ? 'Acuerdo marcado como no cumplido. La deuda que queda sigue en Impagos.' : 'Acuerdo activo otra vez.');
+    }
+    else if (act === 'anular-acuerdo') { S.confirm = 'a' + b.getAttribute('data-aid'); render(false); }
+    else if (act === 'anular-acuerdo-si') {
+      S.confirm = null;
+      run(function () { return api('DELETE', '/api/agreements/' + b.getAttribute('data-aid')).then(function () { S.screen = { name: 'piso', id: id }; }); }, 'Acuerdo anulado.');
+    }
     else if (act === 'cobrar') { p = prop(id); run(pagar(cid, ym, true), 'Anotado: ' + nom(p) + ' ha pagado ' + mes(ym) + '.', function () { run(pagar(cid, ym, false)); }); }
     else if (act === 'descobrar') { run(pagar(cid, ym, false), 'Pago de ' + mes(ym) + ' quitado.', function () { run(pagar(cid, ym, true)); }); }
     else if (act === 'factura-pagada') { run(facturaPagada(id, true), 'Factura anotada como pagada.', function () { run(facturaPagada(id, false)); }); }
@@ -662,8 +914,12 @@
     }
   });
 
+  document.addEventListener('input', function (ev) { if (/^ac-/.test(ev.target.id)) previa(); });
   document.addEventListener('change', function (ev) {
     var t = ev.target;
+    if (/^ac-/.test(t.id)) { previa(); return; }
+    if (t.id === 'fac-filtro') { S.facProp = Number(t.value); render(false); return; }
+    if ((t.id === 'fac-foto' || t.id === 'fac-archivo') && t.files && t.files.length) { añadirDoc([].slice.call(t.files)); t.value = ''; return; }
     if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; return; }
     /* Reduce la foto en el móvil antes de enviarla. */
     if (t.id !== 'averia-foto' || !t.files || !t.files[0]) return;
@@ -682,9 +938,74 @@
   function aceptar(code) {
     return api('POST', '/api/invites/accept', { code: code }).then(function (r) { S.cartera = String(r.ownerId); S.tab = 'pagos'; S.screen = null; });
   }
+  function pintarDoc() {
+    var el = document.getElementById('doc-lista');
+    if (el) el.innerHTML = vDoc();
+    var foto = document.getElementById('fac-foto');
+    if (foto) foto.parentNode.firstChild.textContent = S.pages.length ? 'Hacer foto de otra página' : 'Hacer una foto';
+  }
+  /* Reduce una foto a JPEG de 1600 px como mucho: se lee bien y ocupa poco. */
+  function fotoJpeg(file) {
+    return new Promise(function (ok, ko) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        ok({ url: c.toDataURL('image/jpeg', 0.8), w: c.width, h: c.height });
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); ko(new Error('No se ha podido leer esa foto.')); };
+      img.src = url;
+    });
+  }
+  function añadirDoc(files) {
+    var pdf = files.filter(function (f) { return f.type === 'application/pdf' || /\.pdf$/i.test(f.name); })[0];
+    if (pdf) { S.doc = { file: pdf, name: pdf.name }; S.pages = []; pintarDoc(); return; }
+    S.doc = null;
+    Promise.all(files.map(fotoJpeg)).then(function (pgs) { S.pages = S.pages.concat(pgs); pintarDoc(); }).catch(function (e) { toast(e.message); });
+  }
+  function bytesDeB64(b64) { var bin = atob(b64), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  function b64DeBytes(u8) { var s = ''; for (var i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+  /* Junta las fotos en un PDF (una página A4 por foto). Las fotos van tal cual, como JPEG dentro del PDF. */
+  function pdfDeFotos(pages) {
+    var parts = [], offs = [], len = 0, n = 2 + pages.length * 3;
+    function put(x) { var b = typeof x === 'string' ? Uint8Array.from(x, function (ch) { return ch.charCodeAt(0); }) : x; parts.push(b); len += b.length; }
+    function obj(i, body) { offs[i] = len; put(i + ' 0 obj\n'); body(); put('\nendobj\n'); }
+    put('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n');
+    obj(1, function () { put('<< /Type /Catalog /Pages 2 0 R >>'); });
+    obj(2, function () { put('<< /Type /Pages /Count ' + pages.length + ' /Kids [' + pages.map(function (_, i) { return (3 + i * 3) + ' 0 R'; }).join(' ') + '] >>'); });
+    pages.forEach(function (pg, i) {
+      var o = 3 + i * 3, jpg = bytesDeB64(pg.url.split(',')[1]), W = 595, H = 842, m = 20;
+      var k = Math.min((W - 2 * m) / pg.w, (H - 2 * m) / pg.h), w = pg.w * k, h = pg.h * k;
+      var cmd = 'q ' + w.toFixed(2) + ' 0 0 ' + h.toFixed(2) + ' ' + ((W - w) / 2).toFixed(2) + ' ' + ((H - h) / 2).toFixed(2) + ' cm /Im0 Do Q';
+      obj(o, function () { put('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W + ' ' + H + '] /Resources << /XObject << /Im0 ' + (o + 1) + ' 0 R >> >> /Contents ' + (o + 2) + ' 0 R >>'); });
+      obj(o + 1, function () {
+        put('<< /Type /XObject /Subtype /Image /Width ' + pg.w + ' /Height ' + pg.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + jpg.length + ' >>\nstream\n');
+        put(jpg); put('\nendstream');
+      });
+      obj(o + 2, function () { put('<< /Length ' + cmd.length + ' >>\nstream\n' + cmd + '\nendstream'); });
+    });
+    var xref = len;
+    put('xref\n0 ' + (n + 1) + '\n0000000000 65535 f \n');
+    for (var i = 1; i <= n; i++) put(String(offs[i]).padStart(10, '0') + ' 00000 n \n');
+    put('trailer\n<< /Size ' + (n + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+    var out = new Uint8Array(len), at = 0;
+    parts.forEach(function (b) { out.set(b, at); at += b.length; });
+    return out;
+  }
+  /* El documento de la factura en base64: el PDF elegido o las fotos convertidas en PDF. */
+  function docFactura() {
+    if (S.pages.length) {
+      var pdf = pdfDeFotos(S.pages);
+      if (pdf.length > 5 * 1024 * 1024) return Promise.reject(new Error('Las fotos ocupan demasiado (máximo 5 MB). Quite alguna página.'));
+      return Promise.resolve(b64DeBytes(pdf));
+    }
+    return leerPdf(S.doc && S.doc.file);
+  }
   function leerPdf(file) {
     return new Promise(function (ok, ko) {
-      if (!file) return ko(new Error('Elija el archivo PDF de la factura.'));
+      if (!file) return ko(new Error('Haga una foto a la factura o elija el PDF.'));
       if (file.size > 5 * 1024 * 1024) return ko(new Error('El PDF es demasiado grande (máximo 5 MB).'));
       var r = new FileReader();
       r.onload = function () { ok(String(r.result).split(',')[1] || ''); };
@@ -697,7 +1018,7 @@
     ev.preventDefault();
     var f = ev.target.id, v = function (i) { var el = document.getElementById(i); return el ? el.value.trim() : ''; };
     function datosContrato() {
-      return { tenant: v('con-inq'), phone: v('con-tel'), rent: v('con-renta'), startDate: v('con-inicio'), endDate: v('con-fin'), ipcPct: v('con-ipc'), ipcDate: v('con-ipc-fecha') };
+      return { tenant: v('con-inq'), phone: v('con-tel'), email: v('con-mail'), rent: v('con-renta'), startDate: v('con-inicio'), endDate: v('con-fin'), ipcPct: v('con-ipc'), ipcDate: v('con-ipc-fecha') };
     }
     if (f === 'form-auth') {
       var reg = S.auth === 'registro';
@@ -734,9 +1055,23 @@
     } else if (f === 'form-factura') {
       var fb = { propertyId: Number(v('fac-piso')), kind: v('fac-tipo'), label: v('fac-otro'), amount: v('fac-importe'), billDate: v('fac-fecha') };
       run(function () {
-        return leerPdf(document.getElementById('fac-pdf').files[0]).then(function (b64) { fb.pdf = b64; return api('POST', '/api/utilities', fb); })
-          .then(function (r) { S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id }; });
+        return docFactura().then(function (b64) { fb.pdf = b64; return api('POST', '/api/utilities', fb); })
+          .then(function (r) { S.doc = null; S.pages = []; S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id }; });
       }).then(function () { window.scrollTo(0, 0); });
+    } else if (f === 'form-acuerdo') {
+      var sa = S.screen;
+      run(function () {
+        return api('POST', '/api/contracts/' + sa.cid + '/agreements', { total: v('ac-total'), monthly: v('ac-mensual'), startYm: Number(v('ac-inicio')), note: v('ac-nota') })
+          .then(function (r) { S.screen = { name: 'acuerdo', id: sa.id, aid: r.id }; });
+      }, 'Acuerdo guardado. Puede enviárselo por WhatsApp.').then(function () { window.scrollTo(0, 0); });
+    } else if (f === 'form-abono') {
+      var aid = S.screen.aid;
+      run(function () { return api('POST', '/api/agreements/' + aid + '/payments', { amount: v('ab-importe'), date: v('ab-fecha') }); }, 'Pago anotado.');
+    } else if (f === 'form-importe') {
+      var sel = v('imp-mes').split(':'), si2 = S.screen;
+      run(function () {
+        return api('POST', '/api/contracts/' + sel[0] + '/amount', { ym: Number(sel[1]), amount: v('imp-importe') }).then(function () { S.screen = { name: 'piso', id: si2.id }; });
+      }, 'Importe guardado.').then(function () { window.scrollTo(0, 0); });
     } else if (f === 'form-averia') {
       run(function () {
         return api('POST', '/api/issues', { propertyId: Number(v('averia-piso')), text: v('averia-txt'), photo: S.photo }).then(function () { S.photo = null; S.tab = 'averias'; S.screen = null; });

@@ -1,6 +1,6 @@
 /* Service worker: guarda la pantalla de la app para que abra aunque falle la conexión.
    Los datos (/api), las fotos (/uploads) y las facturas (/factura) nunca se guardan: siempre van al servidor. */
-const CACHE = 'klyp-alquileres-v2';
+const CACHE = 'klyp-alquileres-v3';
 const SHELL = ['/app', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

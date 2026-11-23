@@ -18,11 +18,20 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 
 ## Inquilinos, IPC y facturas de suministros
 
-- **Inquilinos por fechas:** cada inmueble guarda una lista de contratos (inquilino, teléfono, renta, fecha de inicio y de fin). Con «Cambiar de inquilino» el anterior queda cerrado la víspera y conserva sus pagos y deudas. Las fechas de dos inquilinos no pueden pisarse. Si uno sale y otro entra dentro del mismo mes, ese mes se le cuenta entero a los dos: no hay prorrateo.
+- **Inquilinos por fechas:** cada inmueble guarda una lista de contratos (inquilino, teléfono, renta, fecha de inicio y de fin). Con «Cambiar de inquilino» el anterior queda cerrado la víspera y conserva sus pagos y deudas. Las fechas de dos inquilinos no pueden pisarse. Si uno sale y otro entra dentro del mismo mes, la renta de ese mes se reparte por días (por ejemplo, sale el 15 de mayo: paga 15/31 de la renta; el nuevo paga los 16 días restantes y su día de cobro ese mes es el día que entra). En la ficha, «Corregir el importe de un mes» permite poner otra cantidad a mano.
 - **Subida del IPC:** se apunta el porcentaje y la fecha desde la que aplica (al dar de alta el inmueble o después, en la ficha). La renta sube sola desde la mensualidad de ese mes; los meses anteriores no cambian. Pasada la fecha, la ficha vuelve a mostrar «Sin subida de IPC programada» para apuntar la del año siguiente.
-- **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Impagos.
-- **Envío por WhatsApp:** tras guardar, un botón abre WhatsApp con el inquilino y el mensaje ya escrito, que incluye un enlace al PDF; solo hay que pulsar Enviar. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta.
+- **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF o se hacen fotos al papel, una por página; las fotos se convierten en un PDF en el propio móvil (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Impagos.
+- **Envío por WhatsApp o correo:** tras guardar, «WhatsApp» y «Correo» abren el mensaje ya escrito, con un enlace al PDF, para el teléfono o el correo del inquilino; solo hay que pulsar Enviar. «Enviar el PDF como archivo» usa el menú de compartir del móvil para adjuntar el documento de verdad. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta o un servidor de correo.
+- **Seguimiento por inmueble:** en Facturas se puede filtrar por inmueble y ver lo pendiente, lo facturado en el año por tipo y lo cobrado. La ficha del inmueble muestra el mismo resumen.
 - **Enlace del PDF:** `/factura/<clave>.pdf` se abre sin iniciar sesión, para que el inquilino pueda verlo. La clave es aleatoria (128 bits); quien tenga el enlace puede ver esa factura.
+
+## Impagos y acuerdos de pago
+
+- **Impagos por persona:** la pestaña agrupa las deudas por inquilino, no por casa. Si en una casa un inquilino debe y el siguiente no, solo aparece el que debe, aunque ya no viva allí.
+- **Acuerdo de pago:** con un inquilino que debe meses anteriores o facturas, «Hacer un acuerdo de pago» recoge esa deuda (se puede cambiar la cantidad) y pide cuánto pagará al mes en total. Lo que pase de la renta va a la deuda: debe 3.000 €, paga 400 € de renta y acuerdan 600 € al mes, así que van 200 € a la deuda durante 15 meses. Si el inquilino ya no vive allí, todo lo que pague va a la deuda.
+- La renta del mes en curso no entra en el acuerdo: se sigue cobrando aparte en Pagos.
+- Los meses y facturas incluidos dejan de salir sueltos y pasan a «En acuerdo de pago». Los pagos del acuerdo se anotan en la pantalla del acuerdo; la app avisa si va retrasado en las cuotas, y se puede marcar como no cumplido (la deuda que queda sigue en Impagos). Cuando se paga entero, esos meses y facturas pasan a «Pagado con el acuerdo».
+- «Enviar el acuerdo por WhatsApp» manda al inquilino las condiciones por escrito.
 
 ## Permisos por usuario
 

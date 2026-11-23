@@ -55,6 +55,7 @@ svg.i{fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke
 .warn{color:var(--warn);background:var(--warn-bg)}
 .bad{color:var(--bad);background:var(--bad-bg)}
 .none{color:var(--muted);background:var(--line)}
+.deal{color:var(--accent);background:var(--accent-soft)}
 .pill{display:inline-block;font-weight:700;font-size:16px;border-radius:999px;padding:3px 12px}
 .status-card{border-radius:var(--r);padding:18px;display:flex;gap:14px;align-items:center}
 .status-card .dot{background:transparent;flex:none}
@@ -85,6 +86,11 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .code{font-family:var(--font-display);font-size:34px;letter-spacing:.12em;text-align:center;user-select:all}
 .msg{background:var(--accent-soft);border-radius:12px;padding:12px;font-size:17px;overflow-wrap:anywhere}
 .err{background:var(--bad-bg);color:var(--bad);border-radius:12px;padding:12px;font-weight:700}
+button.kv.link{width:100%;background:none;border:none;border-bottom:1px solid var(--line);font:inherit;color:inherit;text-align:left;cursor:pointer;padding:10px 0}
+.kv .pg{display:flex;align-items:center;gap:12px}
+.kv .pg img{width:52px;height:68px;object-fit:cover;border-radius:6px;border:1px solid var(--line)}
+b.red{color:var(--bad)}
+label.btn input[type=file]{display:none}
 .thumb{width:100%;max-height:220px;object-fit:cover;border-radius:10px}
 .months{display:grid;grid-template-columns:repeat(auto-fit,minmax(48px,1fr));gap:8px}
 .mcell{border-radius:12px;padding:8px 2px;display:flex;flex-direction:column;align-items:center;gap:2px;font-weight:700;font-size:16px}
@@ -95,7 +101,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 /* Formularios */
 label.f{display:flex;flex-direction:column;gap:6px;font-weight:700}
 label.f small{font-weight:400;color:var(--muted);font-size:16px}
-input[type=text],input[type=tel],input[type=number],input[type=password],input[type=date],input[type=file],select,textarea{font:inherit;font-size:19px;color:var(--fg);
+input[type=text],input[type=tel],input[type=number],input[type=password],input[type=date],input[type=file],input[type=email],select,textarea{font:inherit;font-size:19px;color:var(--fg);
   background:var(--surface);border:2px solid var(--line);border-radius:12px;padding:14px;width:100%;min-height:58px}
 textarea{min-height:110px;resize:vertical}
 label.check{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:start;background:var(--surface);border:2px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}
