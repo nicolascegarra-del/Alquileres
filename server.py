@@ -217,7 +217,8 @@ def init_db():
                             ("invites", "perms", "TEXT"), ("users", "disabled", "TEXT NOT NULL DEFAULT ''"),
                             ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
                             ("utilities", "agreement_id", "INTEGER"), ("contracts", "email", "TEXT NOT NULL DEFAULT ''"),
-                            ("utilities", "email_sent_at", "TEXT"), ("utilities", "email_error", "TEXT")):
+                            ("utilities", "email_sent_at", "TEXT"), ("utilities", "email_error", "TEXT"),
+                            ("users", "max_props", "INTEGER")):
         if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
     # Datos de la primera versión (un inquilino fijo por inmueble) -> contratos.
@@ -365,6 +366,16 @@ def send_mail(cfg, to, subject, body, attachment=None, filename="factura.pdf"):
         raise ApiError(502, f"El servidor de correo no acepta la dirección {to}.")
     except (smtplib.SMTPException, OSError, ValueError) as e:
         raise ApiError(502, "No se ha podido enviar el correo: " + (str(e) or e.__class__.__name__)[:200])
+
+
+def owner_plan(con, owner_id):
+    """Plan de un usuario con su límite de inmuebles efectivo: el propio, si el administrador le ha puesto uno, o el del plan."""
+    row = con.execute("SELECT p.*, u.max_props FROM plans p JOIN users u ON u.plan_id=p.id WHERE u.id=?", (owner_id,)).fetchone()
+    out = plan_json(row)
+    if row["max_props"] is not None:
+        out["maxProperties"] = row["max_props"]
+    out["customLimit"] = row["max_props"] is not None
+    return out
 
 
 def plan_json(p):
@@ -791,7 +802,6 @@ class Handler(BaseHTTPRequestHandler):
         now = cur_ym()
         today = date.today().isoformat()
         owner = con.execute("SELECT * FROM users WHERE id=?", (owner_id,)).fetchone()
-        plan = con.execute("SELECT * FROM plans WHERE id=?", (owner["plan_id"],)).fetchone()
         show_pay = lv["pagos"] >= 1
         show_rent = show_pay or lv["inmuebles"] >= 1
         rents, pays, contracts = {}, {}, {}
@@ -864,7 +874,7 @@ class Handler(BaseHTTPRequestHandler):
                 (user["id"],))]
         out = {"user": user_json(user), "today": today,
                "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
-               "carteras": carteras, "plan": plan_json(plan), "properties": props, "issues": issues,
+               "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props, "issues": issues,
                "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "helpers": [], "invites": []}
         if role == "owner":
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "perms": member_perms(h)}
@@ -886,6 +896,8 @@ class Handler(BaseHTTPRequestHandler):
         alias = text(data, "alias", 40)
         address = text(data, "address", 120, "Escriba la dirección.")
         utilities = 1 if data.get("utilities") else 0
+        if "suministros" in disabled_set(con.execute("SELECT disabled FROM users WHERE id=?", (owner_id,)).fetchone()):
+            utilities = prop["utilities"] if prop else 0
         try:
             due = int(data.get("dueDay"))
         except (TypeError, ValueError):
@@ -896,12 +908,13 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("UPDATE properties SET alias=?, address=?, due_day=?, utilities=? WHERE id=?",
                         (alias, address, due, utilities, prop["id"]))
             return {"id": prop["id"]}
-        plan = con.execute("SELECT p.* FROM plans p JOIN users u ON u.plan_id=p.id WHERE u.id=?", (owner_id,)).fetchone()
+        plan = owner_plan(con, owner_id)
         count = con.execute("SELECT COUNT(*) FROM properties WHERE owner_id=? AND archived=0", (owner_id,)).fetchone()[0]
-        if plan["max_properties"] is not None and count >= plan["max_properties"]:
-            n = plan["max_properties"]
-            raise ApiError(403, f"El plan {plan['name']} permite {n} {'inmueble' if n == 1 else 'inmuebles'}. "
-                                "Para añadir más hay que cambiar de plan.")
+        if plan["maxProperties"] is not None and count >= plan["maxProperties"]:
+            n = plan["maxProperties"]
+            quien = "Su cuenta" if plan["customLimit"] else f"El plan {plan['name']}"
+            raise ApiError(403, f"{quien} permite {n} {'inmueble' if n == 1 else 'inmuebles'}. "
+                                "Para añadir más, póngase en contacto con KLYP.")
         # tenant, phone, rent y start_ym son columnas de la primera versión: ya no se usan (ver contracts).
         cur = con.execute(
             "INSERT INTO properties(owner_id, alias, address, tenant, rent, due_day, start_ym, utilities, created_at) "
@@ -1197,7 +1210,7 @@ class Handler(BaseHTTPRequestHandler):
                 "id": u["id"], "name": u["name"], "phone": u["phone"], "createdAt": u["created_at"],
                 "lastSeen": u["last_seen"], "planId": u["plan_id"], "blocked": bool(u["blocked"]),
                 "properties": u["props"], "helpers": u["helpers"], "isAdmin": is_admin(u),
-                "disabled": sorted(disabled_set(u)),
+                "disabled": sorted(disabled_set(u)), "maxProps": u["max_props"],
             } for u in con.execute(
                 "SELECT u.*, (SELECT COUNT(*) FROM properties p WHERE p.owner_id=u.id AND p.archived=0) AS props, "
                 "(SELECT COUNT(*) FROM members m WHERE m.owner_id=u.id) AS helpers FROM users u ORDER BY u.id DESC")]
@@ -1205,6 +1218,17 @@ class Handler(BaseHTTPRequestHandler):
             return {"users": users, "plans": plans}
         if seg[:1] == ["smtp"]:
             return self.admin_smtp(con, m, seg[1:], data)
+        if m == "GET" and len(seg) == 3 and seg[0] == "users" and seg[2] == "properties":
+            uid = self.int_seg(seg, 1)
+            today = date.today().isoformat()
+            return {"properties": [{
+                "alias": p["alias"], "address": p["address"], "utilities": bool(p["utilities"]), "createdAt": p["created_at"],
+                "tenant": p["tenant_now"], "bills": p["bills"],
+            } for p in con.execute(
+                "SELECT p.*, (SELECT c.tenant FROM contracts c WHERE c.property_id=p.id AND c.start_date<=? "
+                "AND (c.end_date IS NULL OR c.end_date>=?) LIMIT 1) AS tenant_now, "
+                "(SELECT COUNT(*) FROM utilities x WHERE x.property_id=p.id) AS bills "
+                "FROM properties p WHERE p.owner_id=? AND p.archived=0 ORDER BY p.id", (today, today, uid))]}
         if m == "POST" and len(seg) == 3 and seg[0] == "users" and seg[2] == "reset":
             uid = self.int_seg(seg, 1)
             target = con.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
@@ -1222,6 +1246,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not con.execute("SELECT 1 FROM plans WHERE id=?", (data["planId"],)).fetchone():
                     raise ApiError(400, "Ese plan no existe.")
                 con.execute("UPDATE users SET plan_id=? WHERE id=?", (data["planId"], uid))
+            if "maxProps" in data:
+                v = data["maxProps"]
+                if v is None or str(v).strip() == "":
+                    v = None
+                else:
+                    try:
+                        v = int(v)
+                    except (TypeError, ValueError):
+                        raise ApiError(400, "El límite debe ser un número.")
+                    if v < 0:
+                        raise ApiError(400, "El límite no puede ser negativo.")
+                con.execute("UPDATE users SET max_props=? WHERE id=?", (v, uid))
             if "disabled" in data:
                 off = data["disabled"]
                 if not isinstance(off, list) or any(x not in MODULES for x in off):

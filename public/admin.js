@@ -19,7 +19,8 @@
     toastT = setTimeout(function () { $('toast').hidden = true; }, 4000);
   }
   function plan(id) { return D.plans.filter(function (p) { return p.id === id; })[0]; }
-  var MODS = [['pagos', 'Pagos'], ['suministros', 'Facturas'], ['averias', 'Averías'], ['inmuebles', 'Inmuebles']];
+  var MODS = [['pagos', 'Pagos'], ['averias', 'Averías'], ['inmuebles', 'Inmuebles']], VER = null;
+  function limite(u) { return u.maxProps != null ? u.maxProps : plan(u.planId).maxProperties; }
   function tope(n) { return n == null ? 'sin límite' : n; }
 
   function render() {
@@ -35,17 +36,21 @@
       var p = plan(u.planId);
       return '<tr><td><b>' + esc(u.name) + '</b>' + (u.isAdmin ? ' <span class="pill ok">Admin</span>' : '') + '</td>' +
         '<td class="num">' + esc(u.phone) + '</td><td class="num">' + fecha(u.createdAt) + '</td><td class="num">' + fecha(u.lastSeen) + '</td>' +
-        '<td class="num">' + u.properties + ' / ' + tope(p.maxProperties) + '</td><td class="num">' + u.helpers + ' / ' + tope(p.maxHelpers) + '</td>' +
+        '<td class="num">' + u.properties + ' / ' + tope(limite(u)) + (u.maxProps != null ? ' <span class="pill warn">propio</span>' : '') +
+        ' <button class="btn plain" data-ver="' + u.id + '">Ver</button></td><td class="num">' + u.helpers + ' / ' + tope(p.maxHelpers) + '</td>' +
         '<td><select data-plan-user="' + u.id + '" aria-label="Plan de ' + esc(u.name) + '">' + D.plans.map(function (x) {
           return '<option value="' + x.id + '"' + (x.id === u.planId ? ' selected' : '') + '>' + esc(x.name) + '</option>';
         }).join('') + '</select></td>' +
+        '<td>' + (u.disabled.indexOf('suministros') < 0
+          ? '<span class="pill ok">Activadas</span> <button class="btn plain" data-sum="' + u.id + '" data-v="0">Desactivar</button>'
+          : '<span class="pill bad">Desactivadas</span> <button class="btn" data-sum="' + u.id + '" data-v="1">Activar</button>') + '</td>' +
         '<td>' + MODS.map(function (m) {
           return '<label class="mod"><input type="checkbox" data-mod-user="' + u.id + '" value="' + m[0] + '"' + (u.disabled.indexOf(m[0]) < 0 ? ' checked' : '') + '>' + m[1] + '</label>';
         }).join('') + '</td>' +
         '<td>' + (u.blocked ? '<span class="pill bad">Desactivado</span> <button class="btn" data-bloquear="' + u.id + '" data-v="0">Activar</button>'
           : '<span class="pill ok">Activo</span> <button class="btn plain" data-bloquear="' + u.id + '" data-v="1">Desactivar</button>') + '</td>' +
         '<td><button class="btn" data-reset="' + u.id + '">Código de recuperación</button></td></tr>';
-    }).join('') : '<tr><td colspan="10" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
+    }).join('') : '<tr><td colspan="11" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
     $('planes').innerHTML = D.plans.map(function (p) {
       return '<tr><td><input type="text" id="pl-nombre-' + p.id + '" value="' + esc(p.name) + '" maxlength="30" aria-label="Nombre del plan"></td>' +
         '<td><input type="text" id="pl-precio-' + p.id + '" value="' + esc(p.price) + '" maxlength="30" aria-label="Precio"></td>' +
@@ -62,6 +67,26 @@
     $('smtp-pass-ayuda').textContent = c.hasPassword ? 'Hay una guardada. Déjela vacía para no cambiarla.' : '';
     $('smtp-estado').innerHTML = c.ready ? '<span class="pill ok">Configurado: las facturas se envían por correo</span>'
       : '<span class="pill warn">Sin configurar: las facturas solo se pueden enviar desde el móvil</span>';
+  }
+  function usuario(id) { return D.users.filter(function (x) { return x.id === Number(id); })[0]; }
+  /* Inmuebles de un usuario y su límite propio. */
+  function detalle() {
+    var u = usuario(VER); if (!u) return;
+    var p = plan(u.planId), box = $('detalle');
+    box.hidden = false; box.innerHTML = '<p class="muted">Cargando…</p>';
+    api('GET', '/api/admin/users/' + u.id + '/properties').then(function (r) {
+      box.innerHTML = '<div class="topbar"><h3>Inmuebles de ' + esc(u.name) + ' (' + r.properties.length + ')</h3><button class="btn mini plain" id="detalle-cerrar">Cerrar</button></div>' +
+        (r.properties.length ? '<div class="tablewrap"><table><thead><tr><th>Nombre</th><th>Dirección</th><th>Inquilino ahora</th><th>Facturas</th><th>Alta</th></tr></thead><tbody>' +
+          r.properties.map(function (x) {
+            return '<tr><td><b>' + esc(x.alias || '—') + '</b></td><td>' + esc(x.address) + '</td><td>' + esc(x.tenant || 'Sin inquilino') + '</td>' +
+              '<td>' + (x.utilities ? 'Sí · ' + x.bills + (x.bills === 1 ? ' factura' : ' facturas') : 'No') + '</td><td class="num">' + fecha(x.createdAt) + '</td></tr>';
+          }).join('') + '</tbody></table></div>' : '<p class="muted">Todavía no ha dado de alta ningún inmueble.</p>') +
+        '<label class="f" style="max-width:420px">Límite de inmuebles para este usuario<small>Déjelo vacío para usar el de su plan ' + esc(p.name) + ' (' + tope(p.maxProperties) + '). ' +
+        'Si pone un número, vale solo para este usuario, cambie o no de plan.</small>' +
+        '<input type="number" id="detalle-limite" min="0" placeholder="El del plan (' + tope(p.maxProperties) + ')" value="' + (u.maxProps == null ? '' : u.maxProps) + '"></label>' +
+        '<button class="btn primary" style="max-width:420px" data-limite="' + u.id + '">Guardar límite</button>';
+      box.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }).catch(function (e) { box.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; });
   }
   function load() {
     return Promise.all([api('GET', '/api/admin/overview'), api('GET', '/api/admin/smtp')]).then(function (r) {
@@ -95,12 +120,22 @@
     var mu = ev.target.getAttribute('data-mod-user');
     if (mu) {
       var off = [].filter.call(document.querySelectorAll('[data-mod-user="' + mu + '"]'), function (c) { return !c.checked; }).map(function (c) { return c.value; });
+      if (usuario(mu).disabled.indexOf('suministros') >= 0) off.push('suministros');
       change(api('PUT', '/api/admin/users/' + mu, { disabled: off }), 'Apartados guardados.');
     }
   });
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest('button'); if (!b) return;
     var u = b.getAttribute('data-bloquear'), p = b.getAttribute('data-guardar-plan'), rs = b.getAttribute('data-reset');
+    var su = b.getAttribute('data-sum'), ver = b.getAttribute('data-ver'), lim = b.getAttribute('data-limite');
+    if (su) {
+      var off = usuario(su).disabled.filter(function (x) { return x !== 'suministros'; });
+      if (b.getAttribute('data-v') === '0') off.push('suministros');
+      change(api('PUT', '/api/admin/users/' + su, { disabled: off }), b.getAttribute('data-v') === '0' ? 'Facturas de suministros desactivadas para este usuario.' : 'Facturas de suministros activadas.');
+    }
+    if (ver) { VER = Number(ver); detalle(); }
+    if (b.id === 'detalle-cerrar') { VER = null; $('detalle').hidden = true; }
+    if (lim) change(api('PUT', '/api/admin/users/' + lim, { maxProps: $('detalle-limite').value }).then(function (r) { setTimeout(detalle, 300); return r; }), 'Límite guardado.');
     if (rs) api('POST', '/api/admin/users/' + rs + '/reset', {}).then(function (r) {
       $('reset-nombre').textContent = r.name; $('reset-codigo').textContent = r.code; $('reset-box').hidden = false;
       $('reset-box').scrollIntoView({ block: 'center' });

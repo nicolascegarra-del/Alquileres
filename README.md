@@ -8,7 +8,7 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 |---|---|
 | `/` | Landing con acceso y planes |
 | `/app` | La app del propietario (PWA instalable) |
-| `/admin` | Panel de administración: usuarios dados de alta, plan de cada uno y límites de cada plan |
+| `/admin` | Panel de administración: usuarios, sus inmuebles, plan y límites, facturas de suministros por usuario y correo SMTP |
 | `/healthz` | Comprobación de que el servidor responde |
 
 - **Servidor:** `server.py`, Python 3 sin dependencias externas (no hay `pip install`).
@@ -33,6 +33,14 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 - La renta del mes en curso no entra en el acuerdo: se sigue cobrando aparte en Pagos.
 - Los meses y facturas incluidos dejan de salir sueltos y pasan a «En acuerdo de pago». Los pagos del acuerdo se anotan en la pantalla del acuerdo; la app avisa si va retrasado en las cuotas, y se puede marcar como no cumplido (la deuda que queda sigue en Impagos). Cuando se paga entero, esos meses y facturas pasan a «Pagado con el acuerdo».
 - «Enviar el acuerdo por WhatsApp» manda al inquilino las condiciones por escrito.
+
+## Administración de usuarios
+
+En `/admin`, la tabla de usuarios muestra de cada uno: alta, último acceso, inmuebles dados de alta frente a su máximo, ayudantes, plan, si tiene activadas las facturas de suministros y los demás apartados.
+
+- **Ver** (columna Inmuebles) muestra sus inmuebles: nombre, dirección, inquilino actual y si usa facturas.
+- **Límite de inmuebles:** cada plan tiene su máximo (se cambia en «Planes y límites»). Además, a un usuario concreto se le puede poner un límite propio desde «Ver», que manda sobre el del plan. Bajar el límite no borra inmuebles: solo impide añadir más.
+- **Facturas de suministros:** «Desactivar» quita a ese usuario la pestaña Facturas y la casilla «Necesito facturas de suministros». Sus facturas no se borran y vuelven a verse si se activa otra vez.
 
 ## Permisos por usuario
 

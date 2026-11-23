@@ -397,7 +397,7 @@
         (p.alias ? '<div class="kv"><span>Nombre corto</span><b class="r">' + esc(p.alias) + '</b></div>' : '') +
         '<div class="kv"><span>Dirección</span><b class="r">' + esc(p.address) + '</b></div>' +
         '<div class="kv"><span>Día de cobro</span><b class="r">Día ' + p.dueDay + '</b></div>' +
-        '<div class="kv"><span>Facturas de suministros</span><b class="r">' + (p.utilities ? 'Sí' : 'No') + '</b></div>';
+        (lv('suministros') >= 1 ? '<div class="kv"><span>Facturas de suministros</span><b class="r">' + (p.utilities ? 'Sí' : 'No') + '</b></div>' : '');
       if (edit) {
         h += '<button class="btn" data-act="editar" data-id="' + id + '">Cambiar estos datos</button>' +
           (S.confirm === id
@@ -416,7 +416,7 @@
     var ps = S.data.properties, pl = S.data.plan;
     var h = '<header class="stack"><h1>Mis inmuebles</h1><p class="muted">' +
       (pl.maxProperties == null ? ps.length + (ps.length === 1 ? ' inmueble' : ' inmuebles')
-        : ps.length + ' de ' + pl.maxProperties + ' con el plan ' + esc(pl.name)) + '</p></header>';
+        : ps.length + ' de ' + pl.maxProperties + (pl.customLimit ? ' permitidos' : ' con el plan ' + esc(pl.name))) + '</p></header>';
     if (!ps.length) return h + vacio();
     return h + '<div class="list">' + ps.map(function (p) {
       return fila(p, esc(p.tenant) + ' · día ' + p.dueDay + (p.alias ? '<br>' + esc(p.address) : ''), p.cur && p.cur.rent != null ? eur(p.cur.rent) : '');
@@ -445,8 +445,8 @@
       '<input type="text" id="piso-alias" maxlength="40"' + val('alias') + '></label>' +
       '<label class="f">Dirección<input type="text" id="piso-dir" maxlength="120" placeholder="Calle, número y piso" required' + val('address') + '></label>' +
       '<label class="f">Día del mes en que paga<input type="number" id="piso-dia" inputmode="numeric" min="1" max="28" required value="' + (p ? p.dueDay : 5) + '"></label>' +
-      '<label class="check"><input type="checkbox" id="piso-sum"' + (p && p.utilities ? ' checked' : '') + '>' +
-      '<span><b>Necesito facturas de suministros</b><small>Márquelo si el inquilino paga aparte la luz, el agua u otros gastos y quiere subirle las facturas.</small></span></label>' +
+      (lv('suministros') >= 1 ? '<label class="check"><input type="checkbox" id="piso-sum"' + (p && p.utilities ? ' checked' : '') + '>' +
+        '<span><b>Necesito facturas de suministros</b><small>Márquelo si el inquilino paga aparte la luz, el agua u otros gastos y quiere subirle las facturas.</small></span></label>' : '') +
       (p ? '' : '<h2>Inquilino</h2>' + camposContrato(null, true)) +
       '<button class="btn primary" type="submit">Guardar</button></form>';
   }
@@ -1056,7 +1056,7 @@
         .then(function () { S.busy = false; });
     } else if (f === 'form-piso') {
       var id = S.screen.id, body = id ? {} : datosContrato();
-      body.alias = v('piso-alias'); body.address = v('piso-dir'); body.dueDay = v('piso-dia'); body.utilities = document.getElementById('piso-sum').checked;
+      body.alias = v('piso-alias'); body.address = v('piso-dir'); body.dueDay = v('piso-dia'); body.utilities = document.getElementById('piso-sum') ? document.getElementById('piso-sum').checked : !!(id && prop(id).utilities);
       run(function () {
         return api(id ? 'PUT' : 'POST', '/api/properties' + (id ? '/' + id : ''), body).then(function (r) { S.tab = id ? S.tab : 'pisos'; S.screen = { name: 'piso', id: r.id }; return r; });
       }, 'Guardado.').then(function () { window.scrollTo(0, 0); });
