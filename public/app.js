@@ -97,6 +97,8 @@
     var n = arr.map(function (mo) { return mes(mo.ym); });
     return n.length > 1 ? n.slice(0, -1).join(', ') + ' y ' + n[n.length - 1] : n[0];
   }
+  /* Dirección para los enlaces que se envían: la pública configurada o, si no hay, la actual. */
+  function base() { return (S.data && S.data.publicUrl) || location.origin; }
   function telLimpio(t) { var d = String(t).replace(/\D/g, ''); return d.length === 9 ? '34' + d : d; }
   function tipo(u) { return TIPOS[u.kind] || u.label; }
   function sinPagar(pid) { return S.data.utilities.filter(function (u) { return !u.paidOn && !u.agreementId && (!pid || u.propertyId === pid); }); }
@@ -472,7 +474,7 @@
   function waFactura(u) {
     var p = prop(u.propertyId), c = contrato(p, u.contractId);
     var txt = 'Hola ' + c.tenant.split(' ')[0] + ', le envío la factura de ' + tipo(u).toLowerCase() + ' de ' + p.address + ' con fecha ' + fechaC(u.billDate) +
-      ': ' + eur(u.amount) + '. Puede verla aquí: ' + location.origin + u.url + ' Queda pendiente de pago. Gracias.';
+      ': ' + eur(u.amount) + '. Puede verla aquí: ' + base() + u.url + ' Queda pendiente de pago. Gracias.';
     var asunto = 'Factura de ' + tipo(u).toLowerCase() + ' · ' + p.address + ' · ' + fechaC(u.billDate);
     return {
       txt: txt, c: c, href: 'https://wa.me/' + telLimpio(c.phone) + '?text=' + encodeURIComponent(txt),
@@ -762,7 +764,7 @@
       '<button class="btn primary" type="submit">' + (a ? 'Guardar permisos' : 'Crear invitación') + '</button></form>';
   }
   function vInvitado(s) {
-    var link = location.origin + '/app?invitacion=' + s.code;
+    var link = base() + '/app?invitacion=' + s.code;
     var txt = 'Hola ' + s.nombre + ', le invito a ver mis alquileres en KLYP Alquileres. Entre aquí: ' + link + ' (código ' + s.code + ')';
     return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Invitación creada</h1>' +
       '<p>Envíe este código a ' + esc(s.nombre) + ':</p></header><p class="code">' + esc(s.code) + '</p>' +

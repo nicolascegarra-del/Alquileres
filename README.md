@@ -63,7 +63,8 @@ Compruebe que quien pide el código es de verdad el titular antes de dárselo. A
 
 | Variable | Para qué | Valor en Docker |
 |---|---|---|
-| `ADMIN_PHONE` | Móvil (o móviles separados por comas) de quien administra. La cuenta registrada con ese móvil ve `/admin`. | **Hay que ponerla** |
+| `PUBLIC_URL` | Dirección pública de la app. Se usa en los enlaces de facturas e invitaciones que se envían por WhatsApp o correo. | `https://alquileres.klyp.es` |
+| `ADMIN_PHONE` | Opcional. Móvil (o móviles separados por comas) de quien administra. La cuenta registrada con ese móvil ve `/admin`. El administrador también se puede crear con correo (`crear-admin`). | Opcional |
 | `SUPPORT_CONTACT` | Texto con la forma de contactar con usted (por ejemplo `WhatsApp 600 123 456`). Se muestra en «He olvidado mi clave». | Recomendable ponerla |
 | `TZ` | Zona horaria para calcular "hoy" y los retrasos | `Europe/Madrid` |
 | `PORT` | Puerto | `3000` |
@@ -127,7 +128,7 @@ Los nombres de los menús de Coolify pueden variar un poco según la versión.
 
 ### 2. Dominio
 
-Cree un registro DNS de tipo A, por ejemplo `alquileres.sudominio.com`, que apunte a la IP del VPS.
+En la zona DNS de `klyp.es`, cree un registro de tipo **A** con nombre `alquileres` que apunte a la IP del VPS de Contabo (y uno **AAAA** si usa IPv6). Compruebe que resuelve antes de desplegar: `nslookup alquileres.klyp.es` debe devolver esa IP. Si no, Coolify no podrá pedir el certificado HTTPS.
 
 ### 3. Código
 
@@ -136,18 +137,26 @@ Suba esta carpeta a un repositorio Git (GitHub o GitLab). `.gitignore` ya deja f
 ### 4. Aplicación en Coolify
 
 1. **New Resource** y elija el repositorio (público, o privado conectando la GitHub App de Coolify).
-2. **Build Pack:** `Dockerfile`.
-3. **Ports Exposes:** `3000`.
-4. **Domains:** `https://alquileres.sudominio.com`. Coolify pide el certificado HTTPS solo.
-5. **Environment Variables:** `ADMIN_PHONE` con su móvil y `SUPPORT_CONTACT` con su forma de contacto.
-6. **Persistent Storage:** añada un volumen (Volume Mount) con destino `/data`. **Sin este paso los datos se pierden en cada despliegue.**
-7. **Health Check:** ruta `/healthz`, puerto `3000`.
-8. Pulse **Deploy**.
+2. **Rama:** la que tenga la versión a publicar (hoy, `suministros-contratos-permisos`, o `main` cuando se fusione).
+3. **Build Pack:** `Dockerfile`.
+4. **Ports Exposes:** `3000`.
+5. **Domains:** `https://alquileres.klyp.es` (con `https://`). Coolify pide el certificado HTTPS solo.
+6. **Environment Variables:** `PUBLIC_URL=https://alquileres.klyp.es` y `SUPPORT_CONTACT` con su forma de contacto (por ejemplo `WhatsApp 600 123 456`).
+7. **Persistent Storage:** añada un volumen (Volume Mount) con destino `/data`. **Sin este paso los datos se pierden en cada despliegue.**
+8. **Health Check:** ruta `/healthz`, puerto `3000`.
+9. Pulse **Deploy**.
 
 ### 5. Primer uso
 
-1. Abra `https://alquileres.sudominio.com/app?registro` y cree su cuenta con el móvil de `ADMIN_PHONE`.
-2. Entre en `/admin` para ver los usuarios y ajustar los planes.
+1. En Coolify, abra la pestaña **Terminal** de la aplicación y cree su administrador (use una clave larga):
+
+   ```bash
+   python server.py crear-admin su-correo@ejemplo.com SU_CLAVE
+   ```
+
+2. Entre en `https://alquileres.klyp.es/admin` con ese correo y esa clave.
+3. Configure el correo (SMTP) y envíese una prueba. El remitente debe ser una dirección de `klyp.es` (por ejemplo `facturas@klyp.es`), con SPF y DKIM configurados en el DNS de `klyp.es`, para que los correos no acaben en «no deseado».
+4. Ajuste los planes y límites. Los propietarios se dan de alta en `https://alquileres.klyp.es/app?registro`.
 
 ## Copias de seguridad
 
@@ -156,7 +165,9 @@ Todo está en el volumen `/data`. Programe una copia periódica de ese volumen (
 ## Problemas habituales
 
 - **"unable to open database file" al arrancar:** el volumen `/data` no deja escribir al usuario del contenedor (id 10001). Pasa si se monta una carpeta del servidor en lugar de un volumen. Use un volumen, o dé permisos: `chown -R 10001:10001 /ruta/de/la/carpeta`.
-- **No aparece el panel de administración:** `ADMIN_PHONE` debe coincidir con el móvil de la cuenta, solo con números (por ejemplo `600123456`). Tras cambiarla hay que volver a desplegar.
+- **No aparece el panel de administración:** entre en `/admin` con la cuenta creada con `crear-admin`. Si usa `ADMIN_PHONE`, debe coincidir con el móvil de la cuenta, solo con números (por ejemplo `600123456`), y tras cambiarla hay que volver a desplegar.
+- **El certificado HTTPS no se emite:** el registro DNS de `alquileres.klyp.es` aún no apunta al VPS, o los puertos 80 y 443 están cerrados.
+- **Los enlaces de las facturas salen con otra dirección:** revise `PUBLIC_URL`.
 - **La hora no cuadra:** revise la variable `TZ`.
 
 ## Pendiente para más adelante

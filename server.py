@@ -118,6 +118,9 @@ def norm_phone(raw):
 
 ADMIN_PHONES = {norm_phone(p) for p in os.environ.get("ADMIN_PHONE", "").split(",")} - {""}
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()[:120]
+# Dirección pública de la app (por ejemplo https://alquileres.klyp.es). Se usa en los enlaces que se envían
+# por WhatsApp o correo; si está vacía, la app usa la dirección desde la que se abre.
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
 RESET_SECONDS = 24 * 3600
 
 
@@ -440,6 +443,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        if self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         for k, v in (extra or []):
             self.send_header(k, v)
         self.end_headers()
@@ -847,7 +853,7 @@ class Handler(BaseHTTPRequestHandler):
         out = {"user": user_json(user), "today": today,
                "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
                "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props,
-               "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "helpers": [], "invites": []}
+               "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "publicUrl": PUBLIC_URL, "helpers": [], "invites": []}
         if role == "owner":
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "perms": member_perms(h)}
                               for h in con.execute(

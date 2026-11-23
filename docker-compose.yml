@@ -11,6 +11,7 @@ services:
       TZ: Europe/Madrid
       ADMIN_PHONE: ${ADMIN_PHONE:-}
       SUPPORT_CONTACT: ${SUPPORT_CONTACT:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     volumes:
       - klyp-data:/data
 
