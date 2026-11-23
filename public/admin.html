@@ -46,6 +46,37 @@
         <tbody id="planes"></tbody>
       </table></div>
     </section>
+    <section class="stack">
+      <h2>Correo para enviar las facturas (SMTP)</h2>
+      <p class="muted">Con esto configurado, las facturas de suministros se envían solas por correo al inquilino, con el PDF adjunto. Sirve el SMTP de su proveedor de correo.
+        Gmail: servidor <b>smtp.gmail.com</b>, puerto <b>587</b>, STARTTLS, y como contraseña una «contraseña de aplicación» de su cuenta de Google (no la normal).</p>
+      <p id="smtp-estado"></p>
+      <form id="smtp" class="card stack-lg" style="max-width:640px">
+        <div class="grid2">
+          <label class="f">Servidor SMTP<input type="text" id="smtp-host" placeholder="smtp.sudominio.com" autocomplete="off" autocapitalize="none"></label>
+          <label class="f">Puerto<input type="number" id="smtp-port" placeholder="587" min="1" max="65535"></label>
+        </div>
+        <label class="f">Seguridad<select id="smtp-security">
+          <option value="starttls">STARTTLS (normalmente puerto 587)</option>
+          <option value="ssl">SSL/TLS (normalmente puerto 465)</option>
+          <option value="none">Ninguna (no recomendado)</option></select></label>
+        <div class="grid2">
+          <label class="f">Usuario<input type="text" id="smtp-user" autocomplete="off" autocapitalize="none"></label>
+          <label class="f">Contraseña<small id="smtp-pass-ayuda"></small><input type="password" id="smtp-password" autocomplete="new-password"></label>
+        </div>
+        <div class="grid2">
+          <label class="f">Dirección del remitente<input type="email" id="smtp-from_addr" placeholder="facturas@sudominio.com" autocapitalize="none"></label>
+          <label class="f">Nombre del remitente<input type="text" id="smtp-from_name" placeholder="KLYP Alquileres"></label>
+        </div>
+        <label class="f">Responder a (si quiere)<small>Dirección que recibe las respuestas de los inquilinos.</small><input type="email" id="smtp-reply_to" autocapitalize="none"></label>
+        <button class="btn primary" type="submit">Guardar</button>
+      </form>
+      <form id="smtp-test" class="card stack" style="max-width:640px">
+        <h3>Enviar un correo de prueba</h3>
+        <label class="f">Enviar a<input type="email" id="smtp-to" required autocapitalize="none"></label>
+        <button class="btn" type="submit">Enviar prueba</button>
+      </form>
+    </section>
   </div>
 </div>
 <div class="toast" id="toast" role="status" hidden style="bottom:24px"></div>

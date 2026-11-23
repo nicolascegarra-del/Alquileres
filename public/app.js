@@ -490,8 +490,10 @@
   /* Botones para enviar una factura: WhatsApp, correo y el archivo de verdad (menú de compartir del móvil). */
   function botonesEnvio(u, fuerte) {
     var w = waFactura(u);
+    var directo = S.data.mailReady && w.c.email;
     return '<div class="btn-row"><a class="btn' + (fuerte ? ' good' : '') + '" target="_blank" rel="noopener" href="' + esc(w.href) + '" data-act="enviada" data-id="' + u.id + '">WhatsApp</a>' +
-      '<a class="btn' + (fuerte ? ' good' : '') + '" href="' + esc(w.mail) + '" data-act="enviada" data-id="' + u.id + '">Correo</a></div>' +
+      (directo ? '<button class="btn' + (fuerte && !u.emailSentAt ? ' good' : '') + '" data-act="mail-auto" data-id="' + u.id + '">' + (u.emailSentAt ? 'Reenviar correo' : 'Correo') + '</button>'
+        : '<a class="btn' + (fuerte ? ' good' : '') + '" href="' + esc(w.mail) + '" data-act="enviada" data-id="' + u.id + '">Correo</a>') + '</div>' +
       (navigator.share && navigator.canShare ? '<button class="btn" data-act="compartir-pdf" data-id="' + u.id + '">Enviar el PDF como archivo</button>' : '');
   }
   function resumenFacturas(us) {
@@ -518,8 +520,11 @@
           (ac ? '<button class="btn" data-act="acuerdo" data-id="' + p.id + '" data-aid="' + ac.id + '">Ver el acuerdo</button>' : '<span></span>') + '</div></article>';
       }
       return '<article class="card"><p><span class="pill ' + (u.paidOn ? 'ok' : 'bad') + '">' + (u.paidOn ? 'Pagada el ' + fecha(u.paidOn) : 'Pendiente de pago') + '</span> ' +
-        (u.paidOn ? '' : '<span class="pill ' + (u.sentAt ? 'ok' : 'warn') + '">' + (u.sentAt ? 'Enviada el ' + fecha(u.sentAt) : 'Sin enviar') + '</span>') + '</p>' +
+        (u.paidOn ? '' : u.emailSentAt ? '<span class="pill ok">Correo enviado el ' + fecha(u.emailSentAt) + '</span>'
+          : '<span class="pill ' + (u.sentAt ? 'ok' : 'warn') + '">' + (u.sentAt ? 'Enviada el ' + fecha(u.sentAt) : 'Sin enviar') + '</span>') +
+        (!u.paidOn && u.emailError && !u.emailSentAt ? ' <span class="pill bad">Correo no enviado</span>' : '') + '</p>' +
         '<h2>' + esc(tipo(u)) + ' · ' + eur(u.amount) + '</h2><p class="muted">' + esc(nom(p)) + ' · ' + esc(w.c.tenant) + ' · factura del ' + fechaC(u.billDate) + '</p>' +
+        (!u.paidOn && u.emailError && !u.emailSentAt ? '<p class="err">' + esc(u.emailError) + '</p>' : '') +
         (u.paidOn ? '' : botonesEnvio(u, !u.sentAt)) +
         '<div class="btn-row"><a class="btn" target="_blank" rel="noopener" href="' + u.url + '">Ver el PDF</a>' +
         (edit ? (u.paidOn ? '<button class="btn plain" data-act="factura-impagada" data-id="' + u.id + '">Quitar el pago</button>'
@@ -578,6 +583,8 @@
       '<label class="f">Importe (€)<input type="number" id="fac-importe" inputmode="decimal" min="0.01" step="0.01" required></label>' +
       '<label class="f">Fecha de la factura<small>Se le apunta al inquilino que estaba en el inmueble ese día.</small>' +
       '<input type="date" id="fac-fecha" required value="' + S.data.today + '"></label>' +
+      (S.data.mailReady ? '<label class="check"><input type="checkbox" id="fac-mail" checked><span><b>Enviarla por correo al inquilino al guardar</b>' +
+        '<small>Con el PDF adjunto. Solo si tiene apuntado su correo.</small></span></label>' : '') +
       '<button class="btn primary" type="submit">Guardar la factura</button></form>';
   }
   function vFacturaOk(s) {
@@ -586,11 +593,14 @@
     var w = waFactura(u);
     return '<button class="back" data-act="volver">‹ Volver a Facturas</button><header class="stack"><h1>Factura guardada</h1>' +
       '<p>Queda anotada como <b>pendiente de pago</b> por ' + esc(w.c.tenant) + ': ' + esc(tipo(u).toLowerCase()) + ', ' + eur(u.amount) + '.</p></header>' +
-      '<h2>Envíesela a ' + esc(w.c.tenant.split(' ')[0]) + '</h2>' +
+      (u.emailSentAt ? '<section class="status-card ok"><span class="dot">' + ICON.ok + '</span><div><p class="lbl">Enviada por correo</p><p>A ' + esc(w.c.email) + ', con el PDF adjunto.</p></div></section>' : '') +
+      (u.emailError && !u.emailSentAt ? '<p class="err">El correo no se ha podido enviar: ' + esc(u.emailError) + '</p>' : '') +
+      '<h2>' + (u.emailSentAt ? 'Enviarla también por otra vía' : 'Envíesela a ' + esc(w.c.tenant.split(' ')[0])) + '</h2>' +
       (w.c.phone ? '' : '<p class="msg">No tiene apuntado su teléfono: WhatsApp le pedirá que elija a quién enviarla.</p>') +
       (w.c.email ? '' : '<p class="msg">No tiene apuntado su correo: puede añadirlo en la ficha del inmueble, en «Inquilinos».</p>') +
       botonesEnvio(u, true) +
-      '<p class="muted">WhatsApp y Correo abren el mensaje ya escrito, con un enlace a la factura. «Enviar el PDF como archivo» adjunta el documento: elija WhatsApp o su correo en el menú que aparece.</p>' +
+      '<p class="muted">' + (S.data.mailReady && w.c.email ? '«Correo» la envía directamente desde la app, con el PDF adjunto. WhatsApp abre el mensaje ya escrito, con un enlace a la factura.'
+        : 'WhatsApp y Correo abren el mensaje ya escrito, con un enlace a la factura.') + ' «Enviar el PDF como archivo» adjunta el documento: elija WhatsApp o su correo en el menú que aparece.</p>' +
       '<p class="msg">' + esc(w.txt) + '</p>' +
       '<a class="btn plain" target="_blank" rel="noopener" href="' + u.url + '">Ver el PDF</a>';
   }
@@ -845,6 +855,15 @@
     else if (act === 'volver') go(S.screen && S.screen.id && S.screen.name !== 'piso' ? { name: 'piso', id: S.screen.id } : null);
     else if (act === 'nueva-averia') { S.photo = null; go({ name: 'nueva-averia', id: id }); }
     else if (act === 'nueva-factura') { S.doc = null; S.pages = []; go({ name: 'nueva-factura', id: id }); }
+    else if (act === 'mail-auto') {
+      if (S.busy) return;
+      b.disabled = true; b.textContent = 'Enviando…';
+      S.busy = true;
+      api('POST', '/api/utilities/' + id + '/email', {})
+        .then(function (r) { return load(false).then(function () { toast('Factura enviada por correo a ' + r.to + ', con el PDF adjunto.'); }); })
+        .catch(function (e) { if (e.status === 401) return fail(e); return load(false).catch(function () { }).then(function () { toast(e.message); }); })
+        .then(function () { S.busy = false; });
+    }
     else if (act === 'fac-prop') { S.facProp = id; S.tab = 'facturas'; go(null); }
     else if (act === 'doc-quitar') { S.doc = null; pintarDoc(); }
     else if (act === 'pagina-quitar') { S.pages.splice(Number(b.getAttribute('data-i')), 1); pintarDoc(); }
@@ -1054,10 +1073,17 @@
       }).then(function () { if (nueva != null) { toast('Subida guardada: pagará ' + eur(nueva) + ' al mes.'); window.scrollTo(0, 0); } });
     } else if (f === 'form-factura') {
       var fb = { propertyId: Number(v('fac-piso')), kind: v('fac-tipo'), label: v('fac-otro'), amount: v('fac-importe'), billDate: v('fac-fecha') };
+      var porCorreo = document.getElementById('fac-mail') && document.getElementById('fac-mail').checked, aviso = null;
       run(function () {
         return docFactura().then(function (b64) { fb.pdf = b64; return api('POST', '/api/utilities', fb); })
+          .then(function (r) {
+            if (!porCorreo) return r;
+            /* Se envía después de guardar: si el correo falla, la factura queda guardada igualmente. */
+            return api('POST', '/api/utilities/' + r.id + '/email', {}).then(function (m) { aviso = 'Factura guardada y enviada por correo a ' + m.to + '.'; return r; },
+              function (e) { aviso = 'Factura guardada, pero el correo no se ha enviado: ' + e.message; return r; });
+          })
           .then(function (r) { S.doc = null; S.pages = []; S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id }; });
-      }).then(function () { window.scrollTo(0, 0); });
+      }).then(function () { window.scrollTo(0, 0); if (aviso) toast(aviso); });
     } else if (f === 'form-acuerdo') {
       var sa = S.screen;
       run(function () {

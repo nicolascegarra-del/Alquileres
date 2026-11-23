@@ -11,12 +11,16 @@ import json
 import os
 import re
 import secrets
+import smtplib
 import sqlite3
+import ssl
 import sys
 import threading
 import time
 import traceback
 from datetime import date, timedelta
+from email.message import EmailMessage
+from email.utils import formataddr, make_msgid
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -194,6 +198,7 @@ def init_db():
       contract_id INTEGER NOT NULL REFERENCES contracts(id), kind TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
       amount INTEGER NOT NULL, bill_date TEXT NOT NULL, file TEXT NOT NULL, created_at TEXT NOT NULL,
       sent_at TEXT, paid_on TEXT);
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS month_amounts(
       contract_id INTEGER NOT NULL REFERENCES contracts(id), ym INTEGER NOT NULL,
       amount INTEGER NOT NULL, PRIMARY KEY(contract_id, ym));
@@ -211,7 +216,8 @@ def init_db():
     for table, col, ddl in (("properties", "utilities", "INTEGER NOT NULL DEFAULT 0"), ("members", "perms", "TEXT"),
                             ("invites", "perms", "TEXT"), ("users", "disabled", "TEXT NOT NULL DEFAULT ''"),
                             ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
-                            ("utilities", "agreement_id", "INTEGER"), ("contracts", "email", "TEXT NOT NULL DEFAULT ''")):
+                            ("utilities", "agreement_id", "INTEGER"), ("contracts", "email", "TEXT NOT NULL DEFAULT ''"),
+                            ("utilities", "email_sent_at", "TEXT"), ("utilities", "email_error", "TEXT")):
         if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
     # Datos de la primera versión (un inquilino fijo por inmueble) -> contratos.
@@ -312,6 +318,53 @@ def member_perms(row):
 
 def disabled_set(user):
     return {m for m in (user["disabled"] or "").split(",") if m in MODULES}
+
+
+SMTP_KEYS = ("host", "port", "security", "user", "password", "from_addr", "from_name", "reply_to")
+
+
+def smtp_config(con):
+    cfg = {k: "" for k in SMTP_KEYS}
+    for r in con.execute("SELECT key, value FROM settings WHERE key LIKE 'smtp_%'"):
+        cfg[r["key"][5:]] = r["value"]
+    return cfg
+
+
+def smtp_ready(cfg):
+    return bool(cfg["host"] and cfg["port"] and cfg["from_addr"])
+
+
+def send_mail(cfg, to, subject, body, attachment=None, filename="factura.pdf"):
+    """Envía un correo con el SMTP configurado en /admin. Lanza ApiError con un mensaje claro si falla."""
+    msg = EmailMessage()
+    msg["From"] = formataddr((cfg["from_name"] or "KLYP Alquileres", cfg["from_addr"]))
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["Message-ID"] = make_msgid(domain=cfg["from_addr"].split("@")[-1])
+    if cfg["reply_to"]:
+        msg["Reply-To"] = cfg["reply_to"]
+    msg.set_content(body)
+    if attachment:
+        msg.add_attachment(attachment, maintype="application", subtype="pdf", filename=filename)
+    try:
+        port = int(cfg["port"])
+        ctx = ssl.create_default_context()
+        if cfg["security"] == "ssl":
+            server = smtplib.SMTP_SSL(cfg["host"], port, timeout=20, context=ctx)
+        else:
+            server = smtplib.SMTP(cfg["host"], port, timeout=20)
+            if cfg["security"] == "starttls":
+                server.starttls(context=ctx)
+        with server:
+            if cfg["user"]:
+                server.login(cfg["user"], cfg["password"])
+            server.send_message(msg)
+    except smtplib.SMTPAuthenticationError:
+        raise ApiError(502, "El servidor de correo no acepta el usuario o la contraseña.")
+    except smtplib.SMTPRecipientsRefused:
+        raise ApiError(502, f"El servidor de correo no acepta la dirección {to}.")
+    except (smtplib.SMTPException, OSError, ValueError) as e:
+        raise ApiError(502, "No se ha podido enviar el correo: " + (str(e) or e.__class__.__name__)[:200])
 
 
 def plan_json(p):
@@ -615,6 +668,8 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST" and seg[2:] == ["paid"]:
                 con.execute("UPDATE utilities SET paid_on=? WHERE id=?", (today if data.get("paid", True) else None, uid))
                 return None
+            if m == "POST" and seg[2:] == ["email"]:
+                return self.email_utility(con, owner_id, u)
             if m == "POST" and seg[2:] == ["sent"]:
                 con.execute("UPDATE utilities SET sent_at=? WHERE id=?", (today, uid))
                 return None
@@ -798,7 +853,8 @@ class Handler(BaseHTTPRequestHandler):
         utilities = [] if lv["suministros"] < 1 else [
             {"id": u["id"], "propertyId": u["property_id"], "contractId": u["contract_id"], "kind": u["kind"],
              "label": u["label"], "amount": u["amount"] / 100, "billDate": u["bill_date"], "url": "/factura/" + u["file"], "agreementId": u["agreement_id"],
-             "createdAt": u["created_at"], "sentAt": u["sent_at"], "paidOn": u["paid_on"]}
+             "createdAt": u["created_at"], "sentAt": u["sent_at"], "paidOn": u["paid_on"],
+             "emailSentAt": u["email_sent_at"], "emailError": u["email_error"]}
             for u in con.execute(
                 "SELECT u.* FROM utilities u JOIN properties p ON p.id=u.property_id "
                 "WHERE p.owner_id=? AND p.archived=0 ORDER BY u.id DESC LIMIT 400", (owner_id,))]
@@ -809,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
         out = {"user": user_json(user), "today": today,
                "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
                "carteras": carteras, "plan": plan_json(plan), "properties": props, "issues": issues,
-               "utilities": utilities, "helpers": [], "invites": []}
+               "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "helpers": [], "invites": []}
         if role == "owner":
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "phone": h["phone"], "perms": member_perms(h)}
                               for h in con.execute(
@@ -1049,6 +1105,35 @@ class Handler(BaseHTTPRequestHandler):
             (pid, c["id"], kind, label, amount, bill_date, name, date.today().isoformat()))
         return {"id": cur.lastrowid}
 
+    def email_utility(self, con, owner_id, u):
+        cfg = smtp_config(con)
+        if not smtp_ready(cfg):
+            raise ApiError(400, "El envío de correos no está configurado. Pídaselo al administrador.")
+        c = con.execute("SELECT * FROM contracts WHERE id=?", (u["contract_id"],)).fetchone()
+        if not c["email"]:
+            raise ApiError(400, f"No tiene apuntado el correo de {c['tenant']}. Añádalo en la ficha del inmueble, en «Inquilinos».")
+        p = con.execute("SELECT * FROM properties WHERE id=?", (u["property_id"],)).fetchone()
+        owner = con.execute("SELECT name FROM users WHERE id=?", (owner_id,)).fetchone()
+        kind = {"luz": "luz", "agua": "agua"}.get(u["kind"], u["label"].lower())
+        when = "/".join(str(int(x)) for x in reversed(u["bill_date"].split("-")))
+        amount = f"{u['amount'] / 100:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".")
+        with open(os.path.join(UPLOADS, u["file"]), "rb") as f:
+            pdf = f.read()
+        body = (f"Hola {c['tenant'].split()[0]},\n\n"
+                f"Le envío la factura de {kind} de {p['address']} con fecha {when}, por importe de {amount} €. "
+                "La tiene adjunta en PDF.\n\nQueda pendiente de pago.\n\nUn saludo,\n" + owner["name"])
+        today = date.today().isoformat()
+        try:
+            send_mail(cfg, c["email"], f"Factura de {kind} · {p['address']} · {when}", body, pdf,
+                      f"factura-{re.sub(r'[^a-z0-9]+', '-', kind) or 'suministro'}-{u['bill_date']}.pdf")
+        except ApiError as e:
+            con.execute("UPDATE utilities SET email_error=? WHERE id=?", (e.msg, u["id"]))
+            con.commit()
+            raise
+        con.execute("UPDATE utilities SET email_sent_at=?, email_error=NULL, sent_at=COALESCE(sent_at, ?) WHERE id=?",
+                    (today, today, u["id"]))
+        return {"to": c["email"]}
+
     def new_issue(self, con, owner_id, data):
         try:
             pid = int(data.get("propertyId"))
@@ -1118,6 +1203,8 @@ class Handler(BaseHTTPRequestHandler):
                 "(SELECT COUNT(*) FROM members m WHERE m.owner_id=u.id) AS helpers FROM users u ORDER BY u.id DESC")]
             plans = [plan_json(p) for p in con.execute("SELECT * FROM plans ORDER BY sort, id")]
             return {"users": users, "plans": plans}
+        if seg[:1] == ["smtp"]:
+            return self.admin_smtp(con, m, seg[1:], data)
         if m == "POST" and len(seg) == 3 and seg[0] == "users" and seg[2] == "reset":
             uid = self.int_seg(seg, 1)
             target = con.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
@@ -1166,6 +1253,44 @@ class Handler(BaseHTTPRequestHandler):
             con.execute("UPDATE plans SET name=?, price=?, max_properties=?, max_helpers=? WHERE id=?",
                         (text(data, "name", 30, "El plan necesita un nombre."), text(data, "price", 30),
                          limit("maxProperties"), limit("maxHelpers"), pid))
+            return None
+        raise ApiError(404, "No encontrado.")
+
+    def admin_smtp(self, con, m, seg, data):
+        cfg = smtp_config(con)
+        if m == "GET" and not seg:
+            out = {k: cfg[k] for k in SMTP_KEYS if k != "password"}
+            out["hasPassword"] = bool(cfg["password"])
+            out["ready"] = smtp_ready(cfg)
+            return out
+        if m == "PUT" and not seg:
+            new = {"host": text(data, "host", 120), "port": text(data, "port", 5), "security": data.get("security") or "starttls",
+                   "user": text(data, "user", 200), "from_addr": text(data, "from_addr", 200).lower(),
+                   "from_name": text(data, "from_name", 80), "reply_to": text(data, "reply_to", 200).lower()}
+            if new["security"] not in ("ssl", "starttls", "none"):
+                raise ApiError(400, "Elija el tipo de seguridad.")
+            if new["host"] or new["from_addr"]:
+                if not new["host"]:
+                    raise ApiError(400, "Escriba el servidor SMTP.")
+                if not new["port"].isdigit() or not 1 <= int(new["port"]) <= 65535:
+                    raise ApiError(400, "Escriba el puerto (normalmente 587 o 465).")
+                for k in ("from_addr", "reply_to"):
+                    if new[k] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", new[k]):
+                        raise ApiError(400, "Revise las direcciones de correo.")
+                if not new["from_addr"]:
+                    raise ApiError(400, "Escriba la dirección desde la que se envían los correos.")
+            if data.get("clearPassword"):
+                new["password"] = ""
+            elif str(data.get("password") or ""):
+                new["password"] = str(data["password"])[:300]
+            con.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", [("smtp_" + k, v) for k, v in new.items()])
+            return None
+        if m == "POST" and seg == ["test"]:
+            to = text(data, "to", 200, "Escriba a qué correo enviar la prueba.")
+            if not smtp_ready(cfg):
+                raise ApiError(400, "Guarde primero los datos del servidor de correo.")
+            send_mail(cfg, to, "Prueba de correo de KLYP Alquileres",
+                      "Si lee esto, el envío de correos de KLYP Alquileres funciona.\n\nLas facturas de suministros se enviarán desde esta dirección.")
             return None
         raise ApiError(404, "No encontrado.")
 

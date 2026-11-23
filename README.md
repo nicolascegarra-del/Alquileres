@@ -22,6 +22,7 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 - **Subida del IPC:** se apunta el porcentaje y la fecha desde la que aplica (al dar de alta el inmueble o después, en la ficha). La renta sube sola desde la mensualidad de ese mes; los meses anteriores no cambian. Pasada la fecha, la ficha vuelve a mostrar «Sin subida de IPC programada» para apuntar la del año siguiente.
 - **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF o se hacen fotos al papel, una por página; las fotos se convierten en un PDF en el propio móvil (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Impagos.
 - **Envío por WhatsApp o correo:** tras guardar, «WhatsApp» y «Correo» abren el mensaje ya escrito, con un enlace al PDF, para el teléfono o el correo del inquilino; solo hay que pulsar Enviar. «Enviar el PDF como archivo» usa el menú de compartir del móvil para adjuntar el documento de verdad. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta o un servidor de correo.
+- **Correo automático (SMTP):** si el administrador configura en `/admin` el servidor de correo, al guardar una factura se envía sola al correo del inquilino con el PDF adjunto (hay una casilla, marcada por defecto, para no enviarla). En la lista, «Correo» la envía o reenvía directamente; si falla, la factura queda marcada con «Correo no enviado» y el motivo. Sin SMTP configurado, «Correo» abre el correo del móvil con el mensaje escrito.
 - **Seguimiento por inmueble:** en Facturas se puede filtrar por inmueble y ver lo pendiente, lo facturado en el año por tipo y lo cobrado. La ficha del inmueble muestra el mismo resumen.
 - **Enlace del PDF:** `/factura/<clave>.pdf` se abre sin iniciar sesión, para que el inquilino pueda verlo. La clave es aleatoria (128 bits); quien tenga el enlace puede ver esa factura.
 
@@ -59,6 +60,20 @@ Compruebe que quien pide el código es de verdad el titular antes de dárselo. A
 | `TZ` | Zona horaria para calcular "hoy" y los retrasos | `Europe/Madrid` |
 | `PORT` | Puerto | `3000` |
 | `DATA_DIR` | Carpeta de datos | `/data` |
+
+## Configurar el correo (SMTP)
+
+En `/admin`, apartado **Correo para enviar las facturas (SMTP)**: servidor, puerto, seguridad, usuario, contraseña, dirección y nombre del remitente y, si quiere, una dirección para las respuestas. Después pulse **Enviar prueba** para comprobarlo.
+
+| Proveedor | Servidor | Puerto | Seguridad |
+|---|---|---|---|
+| Gmail / Google Workspace | `smtp.gmail.com` | 587 | STARTTLS, con una «contraseña de aplicación» de Google |
+| Outlook / Microsoft 365 | `smtp.office365.com` | 587 | STARTTLS |
+| La mayoría de hostings | el que indique su proveedor | 465 o 587 | SSL/TLS o STARTTLS |
+
+- La contraseña se guarda en la base de datos (`/data/klyp.db`) tal cual, porque el servidor la necesita para enviar. Proteja el volumen `/data` y sus copias de seguridad, y use una contraseña de aplicación o una cuenta solo para esto.
+- En el VPS, algunos proveedores bloquean el puerto 25; use 587 o 465.
+- Para que los correos no acaben en «no deseado», el dominio del remitente debe tener SPF y DKIM configurados con su proveedor de correo.
 
 ## Crear un administrador con correo y clave
 

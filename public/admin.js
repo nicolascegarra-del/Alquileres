@@ -55,9 +55,35 @@
     }).join('');
   }
 
-  function load() {
-    return api('GET', '/api/admin/overview').then(function (d) { D = d; $('panel').hidden = false; render(); });
+  var SMTP = ['host', 'port', 'security', 'user', 'from_addr', 'from_name', 'reply_to'];
+  function renderSmtp(c) {
+    SMTP.forEach(function (k) { $('smtp-' + k).value = c[k] || (k === 'security' ? 'starttls' : ''); });
+    $('smtp-password').value = '';
+    $('smtp-pass-ayuda').textContent = c.hasPassword ? 'Hay una guardada. Déjela vacía para no cambiarla.' : '';
+    $('smtp-estado').innerHTML = c.ready ? '<span class="pill ok">Configurado: las facturas se envían por correo</span>'
+      : '<span class="pill warn">Sin configurar: las facturas solo se pueden enviar desde el móvil</span>';
   }
+  function load() {
+    return Promise.all([api('GET', '/api/admin/overview'), api('GET', '/api/admin/smtp')]).then(function (r) {
+      D = r[0]; $('panel').hidden = false; render(); renderSmtp(r[1]);
+    });
+  }
+  $('smtp').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var body = { password: $('smtp-password').value };
+    SMTP.forEach(function (k) { body[k] = $('smtp-' + k).value; });
+    api('PUT', '/api/admin/smtp', body).then(function () { return api('GET', '/api/admin/smtp'); })
+      .then(function (c) { renderSmtp(c); toast('Datos del correo guardados. Envíe una prueba para comprobarlos.'); })
+      .catch(function (e) { toast(e.message); });
+  });
+  $('smtp-test').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var b = ev.target.querySelector('button'); b.disabled = true; b.textContent = 'Enviando…';
+    api('POST', '/api/admin/smtp/test', { to: $('smtp-to').value })
+      .then(function () { toast('Correo de prueba enviado. Mire la bandeja de entrada (y la de correo no deseado).'); })
+      .catch(function (e) { toast(e.message); })
+      .then(function () { b.disabled = false; b.textContent = 'Enviar prueba'; });
+  });
   function change(promise, msg) {
     promise.then(load).then(function () { toast(msg); }).catch(function (e) { toast(e.message); load().catch(function () { }); });
   }
