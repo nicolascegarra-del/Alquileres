@@ -13,7 +13,8 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 
 - **Servidor:** `server.py`, Python 3 sin dependencias externas (no hay `pip install`).
 - **Datos:** SQLite en `DATA_DIR/klyp.db`; PDF de las facturas de suministros en `DATA_DIR/uploads`. Todo lo que hay que conservar está en esa carpeta.
-- **Acceso:** móvil + clave. La sesión queda abierta un año en el dispositivo.
+- **Registro:** nombre, correo, móvil y clave. La cuenta queda pendiente hasta que el usuario pulsa el enlace del correo de activación (vale 48 horas). Hace falta tener configurado el correo (SMTP) en `/admin`; sin él, el registro avisa de que no se pueden crear cuentas.
+- **Acceso:** correo o móvil, y clave. La sesión queda abierta un año en el dispositivo.
 - **Planes:** Gratis, Básico y Pro, con máximo de inmuebles y de personas invitadas. Los nombres, precios y límites se cambian en `/admin`. El plan de cada usuario lo asigna el administrador a mano: **no hay cobro automático**.
 
 ## Inquilinos, IPC y facturas de suministros
@@ -51,11 +52,20 @@ Hay tres apartados: **Pagos e impagos**, **Facturas de suministros** e **Inmuebl
 
 El servidor comprueba los permisos en cada petición; no basta con ocultar la pestaña.
 
+## Activación de cuentas
+
+- Al registrarse se envía un correo con el enlace `https://alquileres.klyp.es/app?activar=…`. Al pulsarlo, la cuenta se activa y el usuario entra directamente.
+- Si intenta entrar sin haberla activado, la app se lo dice y le ofrece **Enviarme otra vez el correo** (como mucho 5 veces cada 15 minutos). Cada correo nuevo anula el enlace anterior.
+- Si alguien se registra y nunca activa la cuenta, puede volver a registrarse con el mismo correo o móvil: la cuenta pendiente se sustituye.
+- Si un usuario viene de una invitación, la invitación se acepta al activar la cuenta.
+- En `/admin`, las cuentas pendientes aparecen como **Sin activar**, con los botones **Activar** (sin correo, por ejemplo si no le llega) y **Reenviar correo**.
+- Las cuentas que ya existían antes de este cambio, y las de administrador creadas con `crear-admin`, quedan activadas.
+
 ## Si un usuario olvida su clave
 
 1. El usuario le contacta por el medio indicado en `SUPPORT_CONTACT`.
 2. En `/admin`, pulse **Código de recuperación** en la fila de ese usuario. Aparece un código de 8 caracteres, válido 24 horas y de un solo uso.
-3. Dígaselo al usuario. Él pulsa «He olvidado mi clave», escribe su móvil, el código y una clave nueva, y entra directamente.
+3. Dígaselo al usuario. Él pulsa «He olvidado mi clave», escribe su correo o su móvil, el código y una clave nueva, y entra directamente (si su cuenta estaba sin activar, queda activada).
 
 Compruebe que quien pide el código es de verdad el titular antes de dárselo. Además, cada usuario puede cambiar su clave desde **Cuenta** si recuerda la actual.
 
@@ -155,7 +165,7 @@ Suba esta carpeta a un repositorio Git (GitHub o GitLab). `.gitignore` ya deja f
    ```
 
 2. Entre en `https://alquileres.klyp.es/admin` con ese correo y esa clave.
-3. Configure el correo (SMTP) y envíese una prueba. El remitente debe ser una dirección de `klyp.es` (por ejemplo `facturas@klyp.es`), con SPF y DKIM configurados en el DNS de `klyp.es`, para que los correos no acaben en «no deseado».
+3. **Configure el correo (SMTP) antes de nada** y envíese una prueba: sin él nadie puede registrarse. El remitente debe ser una dirección de `klyp.es` (por ejemplo `facturas@klyp.es`), con SPF y DKIM configurados en el DNS de `klyp.es`, para que los correos no acaben en «no deseado».
 4. Ajuste los planes y límites. Los propietarios se dan de alta en `https://alquileres.klyp.es/app?registro`.
 
 ## Copias de seguridad

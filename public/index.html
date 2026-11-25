@@ -34,7 +34,8 @@
       </div>
       <form id="form-login" class="stack">
         <p class="err" id="login-err" role="alert" hidden></p>
-        <label class="f">Su número de móvil<input type="tel" id="login-tel" inputmode="tel" autocomplete="tel" required></label>
+        <button class="btn" type="button" id="login-reenviar" hidden>Enviarme otra vez el correo de activación</button>
+        <label class="f">Su correo o su móvil<input type="text" id="login-tel" autocomplete="username" autocapitalize="none" required></label>
         <label class="f">Clave<input type="password" id="login-pin" autocomplete="current-password" required></label>
         <button class="btn primary" type="submit">Entrar</button>
         <p class="muted">¿Todavía no tiene cuenta? <a href="/app?registro">Créela aquí</a>.</p>
@@ -63,7 +64,7 @@
 <script>
 (function () {
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function json(r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.error || 'No se ha podido completar.'); return j; }); }
+  function json(r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) { var e = new Error(j.error || 'No se ha podido completar.'); e.code = j.code; throw e; } return j; }); }
 
   fetch('/api/me', { credentials: 'same-origin' }).then(json).then(function (d) {
     document.getElementById('ya-nombre').textContent = d.user.name;
@@ -81,13 +82,21 @@
 
   document.getElementById('form-login').addEventListener('submit', function (ev) {
     ev.preventDefault();
-    var err = document.getElementById('login-err');
-    err.hidden = true;
+    var err = document.getElementById('login-err'), re = document.getElementById('login-reenviar');
+    err.hidden = true; re.hidden = true;
     fetch('/api/login', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: document.getElementById('login-tel').value, pin: document.getElementById('login-pin').value })
     }).then(json).then(function () { location.href = '/app'; })
-      .catch(function (e) { err.textContent = e.message; err.hidden = false; });
+      .catch(function (e) { err.textContent = e.message; err.hidden = false; re.hidden = e.code !== 'inactive'; });
+  });
+  document.getElementById('login-reenviar').addEventListener('click', function () {
+    var err = document.getElementById('login-err');
+    fetch('/api/activation/resend', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: document.getElementById('login-tel').value })
+    }).then(json).then(function () { err.textContent = 'Le hemos enviado otra vez el correo. Revise también el correo no deseado.'; })
+      .catch(function (e) { err.textContent = e.message; });
   });
 })();
 </script>

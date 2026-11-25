@@ -103,10 +103,11 @@ def month_info(c, rr, ym, due_day, override=None):
 
 
 class ApiError(Exception):
-    def __init__(self, status, msg):
+    def __init__(self, status, msg, code=None):
         super().__init__(msg)
         self.status = status
         self.msg = msg
+        self.code = code
 
 
 def norm_phone(raw):
@@ -122,6 +123,8 @@ SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()[:120]
 # por WhatsApp o correo; si está vacía, la app usa la dirección desde la que se abre.
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
 RESET_SECONDS = 24 * 3600
+ACTIVATION_SECONDS = 48 * 3600
+EMAIL_RE = r"[^@\s]+@[^@\s]+\.[^@\s]+"
 
 
 def valid_pin(pin):
@@ -198,6 +201,9 @@ def init_db():
       amount INTEGER NOT NULL, bill_date TEXT NOT NULL, file TEXT NOT NULL, created_at TEXT NOT NULL,
       sent_at TEXT, paid_on TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS activations(
+      user_id INTEGER PRIMARY KEY REFERENCES users(id), token_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+      invite TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS month_amounts(
       contract_id INTEGER NOT NULL REFERENCES contracts(id), ym INTEGER NOT NULL,
       amount INTEGER NOT NULL, PRIMARY KEY(contract_id, ym));
@@ -217,9 +223,16 @@ def init_db():
                             ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
                             ("utilities", "agreement_id", "INTEGER"), ("contracts", "email", "TEXT NOT NULL DEFAULT ''"),
                             ("utilities", "email_sent_at", "TEXT"), ("utilities", "email_error", "TEXT"),
-                            ("users", "max_props", "INTEGER")):
+                            ("users", "max_props", "INTEGER"), ("users", "email", "TEXT NOT NULL DEFAULT ''"),
+                            ("users", "activated_at", "TEXT")):
         if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            if (table, col) == ("users", "activated_at"):
+                # Las cuentas que ya existían antes de pedir activación por correo quedan activadas.
+                con.execute("UPDATE users SET activated_at=created_at")
+            if (table, col) == ("users", "email"):
+                con.execute("UPDATE users SET email=phone WHERE phone LIKE '%@%'")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email) WHERE email<>''")
     # Datos de la primera versión (un inquilino fijo por inmueble) -> contratos.
     for p in con.execute("SELECT * FROM properties WHERE tenant<>'' AND id NOT IN (SELECT property_id FROM contracts)").fetchall():
         cur = con.execute("INSERT INTO contracts(property_id, tenant, phone, start_date, created_at) VALUES(?,?,?,?,?)",
@@ -389,7 +402,7 @@ def is_admin(u):
 def login_id(raw):
     """Identificador de acceso: el móvil o, en las cuentas de administrador creadas por consola, un correo."""
     raw = str(raw or "").strip().lower()
-    return raw[:120] if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", raw) else norm_phone(raw)
+    return raw[:120] if re.fullmatch(EMAIL_RE, raw) else norm_phone(raw)
 
 
 def create_admin(email, pin):
@@ -401,21 +414,25 @@ def create_admin(email, pin):
         raise SystemExit("La clave debe tener al menos 6 números o letras.")
     init_db()
     con = db()
-    row = con.execute("SELECT id FROM users WHERE phone=?", (ident,)).fetchone()
+    today = date.today().isoformat()
+    row = con.execute("SELECT id FROM users WHERE email=? OR phone=?", (ident, ident)).fetchone()
     if row:
-        con.execute("UPDATE users SET pass_hash=?, is_admin=1, blocked=0 WHERE id=?", (hash_pin(pin), row["id"]))
+        con.execute("UPDATE users SET pass_hash=?, is_admin=1, blocked=0, activated_at=COALESCE(activated_at, ?) WHERE id=?",
+                    (hash_pin(pin), today, row["id"]))
         con.execute("DELETE FROM sessions WHERE user_id=?", (row["id"],))
+        con.execute("DELETE FROM activations WHERE user_id=?", (row["id"],))
     else:
         plan = con.execute("SELECT id FROM plans ORDER BY sort DESC, id DESC LIMIT 1").fetchone()
-        con.execute("INSERT INTO users(name, phone, pass_hash, plan_id, is_admin, created_at) VALUES(?,?,?,?,1,?)",
-                    ("Administrador", ident, hash_pin(pin), plan["id"], date.today().isoformat()))
+        con.execute("INSERT INTO users(name, phone, email, pass_hash, plan_id, is_admin, created_at, activated_at) "
+                    "VALUES(?,?,?,?,?,1,?,?)", ("Administrador", ident, ident, hash_pin(pin), plan["id"], today, today))
     con.commit()
     con.close()
     print(f"Administrador listo: {ident}. Entre en /admin con ese correo y su clave.")
 
 
 def user_json(u):
-    return {"id": u["id"], "name": u["name"], "phone": u["phone"], "isAdmin": is_admin(u)}
+    return {"id": u["id"], "name": u["name"], "phone": "" if "@" in u["phone"] else u["phone"], "email": u["email"],
+            "isAdmin": is_admin(u)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -475,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.bill(path)
             return self.static(path)
         except ApiError as e:
-            self.send_json(e.status, {"error": e.msg})
+            self.send_json(e.status, {"error": e.msg, "code": e.code} if e.code else {"error": e.msg})
         except Exception:
             traceback.print_exc()
             self.send_json(500, {"error": "Error del servidor. Inténtelo otra vez."})
@@ -563,6 +580,10 @@ class Handler(BaseHTTPRequestHandler):
             return {"support": SUPPORT_CONTACT}
         if r == "reset" and m == "POST":
             return self.reset(con, data)
+        if r == "activate" and m == "POST":
+            return self.activate(con, data)
+        if r == "activation" and seg[1:] == ["resend"] and m == "POST":
+            return self.resend_activation(con, data)
         if r == "logout" and m == "POST":
             token = self.cookie_token()
             if token:
@@ -721,36 +742,135 @@ class Handler(BaseHTTPRequestHandler):
         if lv[module] < 2:
             raise ApiError(403, "No tiene permiso para anotar en este apartado.")
 
+    def base_url(self):
+        """Dirección pública para los enlaces de los correos."""
+        if PUBLIC_URL:
+            return PUBLIC_URL
+        proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() or "http"
+        return f"{proto}://{self.headers.get('Host') or 'localhost'}"
+
+    def send_activation(self, cfg, name, email, token):
+        link = f"{self.base_url()}/app?activar={token}"
+        send_mail(cfg, email, "Active su cuenta de KLYP Alquileres",
+                  f"Hola {name.split()[0]},\n\n"
+                  "Gracias por crear su cuenta en KLYP Alquileres. Para activarla, pulse este enlace:\n\n"
+                  f"{link}\n\n"
+                  "El enlace vale 48 horas. Si no ha sido usted quien ha creado la cuenta, no haga nada: sin activarla no se puede usar.\n\n"
+                  "Un saludo,\nKLYP Alquileres")
+
     def register(self, con, data):
+        """Alta de cuenta: queda pendiente hasta que se pulsa el enlace que se envía por correo."""
         name = text(data, "name", 60)
+        email = text(data, "email", 120).lower()
         phone = norm_phone(data.get("phone"))
         pin = str(data.get("pin") or "")
         if len(name) < 2:
             raise ApiError(400, "Escriba su nombre.")
+        if not re.fullmatch(EMAIL_RE, email):
+            raise ApiError(400, "Escriba un correo electrónico válido: le enviaremos un enlace para activar la cuenta.")
         if not phone:
             raise ApiError(400, "Escriba un número de móvil válido.")
         valid_pin(pin)
-        if con.execute("SELECT 1 FROM users WHERE phone=?", (phone,)).fetchone():
-            raise ApiError(409, "Ya hay una cuenta con ese móvil. Pulse «Entrar».")
+        cfg = smtp_config(con)
+        if not smtp_ready(cfg):
+            raise ApiError(503, "Ahora mismo no se pueden crear cuentas porque falta configurar el envío de correos. "
+                                "Póngase en contacto con KLYP" + (f": {SUPPORT_CONTACT}." if SUPPORT_CONTACT else "."))
+        olds = con.execute("SELECT * FROM users WHERE phone=? OR email=?", (phone, email)).fetchall()
+        for o in olds:
+            if o["activated_at"]:
+                que = "ese móvil" if o["phone"] == phone else "ese correo"
+                raise ApiError(409, f"Ya hay una cuenta con {que}. Pulse «Entrar».")
+        key = "mail:" + email
+        if too_many_fails(key):
+            raise ApiError(429, "Demasiados intentos. Espere 15 minutos y pruebe otra vez.")
+        token = secrets.token_urlsafe(32)
+        # Primero el correo: si no se puede enviar, no se crea la cuenta.
+        self.send_activation(cfg, name, email, token)
+        note_fail(key)
+        for o in olds:  # cuentas que se crearon con estos datos y nunca se activaron
+            con.execute("DELETE FROM activations WHERE user_id=?", (o["id"],))
+            con.execute("DELETE FROM sessions WHERE user_id=?", (o["id"],))
+            con.execute("DELETE FROM users WHERE id=?", (o["id"],))
         plan = con.execute("SELECT id FROM plans ORDER BY sort, id LIMIT 1").fetchone()
-        cur = con.execute("INSERT INTO users(name, phone, pass_hash, plan_id, created_at) VALUES(?,?,?,?,?)",
-                          (name, phone, hash_pin(pin), plan["id"], date.today().isoformat()))
-        self.start_session(con, cur.lastrowid)
-        return None
+        cur = con.execute("INSERT INTO users(name, phone, email, pass_hash, plan_id, created_at) VALUES(?,?,?,?,?,?)",
+                          (name, phone, email, hash_pin(pin), plan["id"], date.today().isoformat()))
+        invite = re.sub(r"[^A-Z0-9]", "", str(data.get("invite") or "").upper())[:12]
+        con.execute("INSERT INTO activations(user_id, token_hash, expires_at, invite) VALUES(?,?,?,?)",
+                    (cur.lastrowid, hashlib.sha256(token.encode()).hexdigest(), int(time.time()) + ACTIVATION_SECONDS, invite))
+        return {"email": email}
+
+    def activate(self, con, data):
+        token = str(data.get("token") or "").strip()
+        row = con.execute("SELECT a.*, u.blocked FROM activations a JOIN users u ON u.id=a.user_id WHERE a.token_hash=?",
+                          (hashlib.sha256(token.encode()).hexdigest(),)).fetchone() if token else None
+        if not row:
+            raise ApiError(400, "Ese enlace de activación no es válido o ya se ha usado. Pruebe a entrar con su correo y su clave.")
+        if row["expires_at"] < time.time():
+            raise ApiError(400, "Ese enlace de activación ha caducado. Entre con su correo y su clave y pida otro.")
+        if row["blocked"]:
+            raise ApiError(403, "Esta cuenta está desactivada. Póngase en contacto con KLYP.")
+        con.execute("UPDATE users SET activated_at=? WHERE id=?", (date.today().isoformat(), row["user_id"]))
+        con.execute("DELETE FROM activations WHERE user_id=?", (row["user_id"],))
+        out = {}
+        inv = con.execute("SELECT * FROM invites WHERE code=?", (row["invite"],)).fetchone() if row["invite"] else None
+        if inv and inv["owner_id"] != row["user_id"]:
+            con.execute("INSERT OR REPLACE INTO members(owner_id, user_id, role, perms) VALUES(?,?,?,?)",
+                        (inv["owner_id"], row["user_id"], inv["role"], inv["perms"]))
+            con.execute("DELETE FROM invites WHERE code=?", (inv["code"],))
+            out["ownerId"] = inv["owner_id"]
+        self.start_session(con, row["user_id"])
+        return out
+
+    def new_activation(self, con, user, cfg):
+        """Envía un enlace nuevo de activación (el anterior deja de valer)."""
+        token = secrets.token_urlsafe(32)
+        self.send_activation(cfg, user["name"], user["email"], token)
+        old = con.execute("SELECT invite FROM activations WHERE user_id=?", (user["id"],)).fetchone()
+        con.execute("INSERT OR REPLACE INTO activations(user_id, token_hash, expires_at, invite) VALUES(?,?,?,?)",
+                    (user["id"], hashlib.sha256(token.encode()).hexdigest(), int(time.time()) + ACTIVATION_SECONDS,
+                     old["invite"] if old else ""))
+
+    def resend_activation(self, con, data):
+        ident = login_id(data.get("id"))
+        key = "mail:" + ident
+        if not ident:
+            raise ApiError(400, "Escriba su correo o su móvil.")
+        if too_many_fails(key):
+            raise ApiError(429, "Ya le hemos enviado varios correos. Espere 15 minutos y pruebe otra vez.")
+        note_fail(key)
+        cfg = smtp_config(con)
+        if not smtp_ready(cfg):
+            raise ApiError(503, "Ahora mismo no se pueden enviar correos. Póngase en contacto con KLYP.")
+        user = self.find_user(con, ident)
+        # La respuesta es la misma exista o no la cuenta, para no revelar quién está registrado.
+        if user and not user["activated_at"] and user["email"]:
+            self.new_activation(con, user, cfg)
+        return {"ok": True}
+
+    @staticmethod
+    def find_user(con, ident):
+        if not ident:
+            return None
+        if "@" in ident:
+            return con.execute("SELECT * FROM users WHERE email=? OR phone=?", (ident, ident)).fetchone()
+        return con.execute("SELECT * FROM users WHERE phone=?", (ident,)).fetchone()
 
     def login(self, con, data):
-        phone = login_id(data.get("phone"))
+        ident = login_id(data.get("phone"))
         pin = str(data.get("pin") or "")
-        if too_many_fails(phone):
+        if too_many_fails(ident):
             raise ApiError(429, "Demasiados intentos. Espere 15 minutos y pruebe otra vez.")
-        user = con.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone() if phone else None
+        user = self.find_user(con, ident)
         if not user or not check_pin(pin, user["pass_hash"]):
-            note_fail(phone)
-            raise ApiError(401, "El móvil o la clave no son correctos.")
+            note_fail(ident)
+            raise ApiError(401, "El correo, el móvil o la clave no son correctos.")
         if user["blocked"]:
             raise ApiError(403, "Esta cuenta está desactivada. Póngase en contacto con KLYP.")
+        if not user["activated_at"]:
+            raise ApiError(403, f"Todavía no ha activado su cuenta. Pulse el enlace del correo que le enviamos a {user['email']}.",
+                           code="inactive")
         with FAILS_LOCK:
-            FAILS.pop(phone, None)
+            FAILS.pop(ident, None)
         self.start_session(con, user["id"])
         return None
 
@@ -762,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
         self.start_session(con, user_id)
 
     def reset(self, con, data):
-        phone = norm_phone(data.get("phone"))
+        phone = login_id(data.get("phone"))
         code = re.sub(r"[^A-Z0-9]", "", str(data.get("code") or "").upper())
         pin = str(data.get("pin") or "")
         key = "reset:" + phone
@@ -770,16 +890,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(429, "Demasiados intentos. Espere 15 minutos y pruebe otra vez.")
         row = con.execute(
             "SELECT u.id, u.blocked, r.code_hash FROM users u JOIN resets r ON r.user_id=u.id "
-            "WHERE u.phone=? AND r.expires_at>?", (phone, int(time.time()))).fetchone() if phone and code else None
+            "WHERE (u.phone=? OR (u.email<>'' AND u.email=?)) AND r.expires_at>?",
+            (phone, phone, int(time.time()))).fetchone() if phone and code else None
         if not row or not hmac.compare_digest(row["code_hash"], hashlib.sha256(code.encode()).hexdigest()):
             note_fail(key)
-            raise ApiError(400, "El móvil o el código no son correctos, o el código ha caducado.")
+            raise ApiError(400, "El correo, el móvil o el código no son correctos, o el código ha caducado.")
         if row["blocked"]:
             raise ApiError(403, "Esta cuenta está desactivada. Póngase en contacto con KLYP.")
         valid_pin(pin)
         with FAILS_LOCK:
             FAILS.pop(key, None)
             FAILS.pop(phone, None)
+        con.execute("UPDATE users SET activated_at=COALESCE(activated_at, ?) WHERE id=?", (date.today().isoformat(), row["id"]))
+        con.execute("DELETE FROM activations WHERE user_id=?", (row["id"],))
         self.set_pin(con, row["id"], pin)
         return None
 
@@ -1162,6 +1285,7 @@ class Handler(BaseHTTPRequestHandler):
                 "lastSeen": u["last_seen"], "planId": u["plan_id"], "blocked": bool(u["blocked"]),
                 "properties": u["props"], "helpers": u["helpers"], "isAdmin": is_admin(u),
                 "disabled": sorted(disabled_set(u)), "maxProps": u["max_props"],
+                "email": u["email"], "activated": bool(u["activated_at"]),
             } for u in con.execute(
                 "SELECT u.*, (SELECT COUNT(*) FROM properties p WHERE p.owner_id=u.id AND p.archived=0) AS props, "
                 "(SELECT COUNT(*) FROM members m WHERE m.owner_id=u.id) AS helpers FROM users u ORDER BY u.id DESC")]
@@ -1180,6 +1304,19 @@ class Handler(BaseHTTPRequestHandler):
                 "AND (c.end_date IS NULL OR c.end_date>=?) LIMIT 1) AS tenant_now, "
                 "(SELECT COUNT(*) FROM utilities x WHERE x.property_id=p.id) AS bills "
                 "FROM properties p WHERE p.owner_id=? AND p.archived=0 ORDER BY p.id", (today, today, uid))]}
+        if m == "POST" and len(seg) == 3 and seg[0] == "users" and seg[2] == "activation":
+            target = con.execute("SELECT * FROM users WHERE id=?", (self.int_seg(seg, 1),)).fetchone()
+            if not target:
+                raise ApiError(404, "Ese usuario no existe.")
+            if target["activated_at"]:
+                raise ApiError(400, "Esa cuenta ya está activada.")
+            if not target["email"]:
+                raise ApiError(400, "Ese usuario no tiene correo.")
+            cfg = smtp_config(con)
+            if not smtp_ready(cfg):
+                raise ApiError(400, "Configure primero el correo (SMTP).")
+            self.new_activation(con, target, cfg)
+            return {"email": target["email"]}
         if m == "POST" and len(seg) == 3 and seg[0] == "users" and seg[2] == "reset":
             uid = self.int_seg(seg, 1)
             target = con.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
@@ -1197,6 +1334,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not con.execute("SELECT 1 FROM plans WHERE id=?", (data["planId"],)).fetchone():
                     raise ApiError(400, "Ese plan no existe.")
                 con.execute("UPDATE users SET plan_id=? WHERE id=?", (data["planId"], uid))
+            if data.get("activate"):
+                con.execute("UPDATE users SET activated_at=COALESCE(activated_at, ?) WHERE id=?", (date.today().isoformat(), uid))
+                con.execute("DELETE FROM activations WHERE user_id=?", (uid,))
             if "maxProps" in data:
                 v = data["maxProps"]
                 if v is None or str(v).strip() == "":

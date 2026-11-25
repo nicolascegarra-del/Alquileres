@@ -23,6 +23,7 @@
     <button class="btn primary" type="submit">Entrar</button>
   </form>
   <div id="panel" class="stack-lg" hidden>
+    <p class="err" id="aviso-smtp" hidden>Falta configurar el correo (SMTP), más abajo. Sin él no se envían los correos de activación y nadie puede crear una cuenta nueva.</p>
     <section class="stats" id="stats"></section>
     <section class="stack">
       <h2>Usuarios</h2>
@@ -36,7 +37,7 @@
       </div>
       <div class="card" id="detalle" hidden></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Nombre</th><th>Móvil</th><th>Alta</th><th>Último acceso</th><th>Inmuebles</th><th>Ayudantes</th><th>Plan</th><th>Facturas de suministros</th><th>Otros apartados</th><th>Estado</th><th>Clave</th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Móvil</th><th>Correo</th><th>Alta</th><th>Último acceso</th><th>Inmuebles</th><th>Ayudantes</th><th>Plan</th><th>Facturas de suministros</th><th>Otros apartados</th><th>Estado</th><th>Clave</th></tr></thead>
         <tbody id="usuarios"></tbody>
       </table></div>
     </section>
@@ -49,8 +50,8 @@
       </table></div>
     </section>
     <section class="stack">
-      <h2>Correo para enviar las facturas (SMTP)</h2>
-      <p class="muted">Con esto configurado, las facturas de suministros se envían solas por correo al inquilino, con el PDF adjunto. Sirve el SMTP de su proveedor de correo.
+      <h2>Correo de la app (SMTP)</h2>
+      <p class="muted">Se usa para enviar el correo de activación a cada usuario que se registra y las facturas de suministros a los inquilinos. Sirve el SMTP de su proveedor de correo.
         Gmail: servidor <b>smtp.gmail.com</b>, puerto <b>587</b>, STARTTLS, y como contraseña una «contraseña de aplicación» de su cuenta de Google (no la normal).</p>
       <p id="smtp-estado"></p>
       <form id="smtp" class="card stack-lg" style="max-width:640px">

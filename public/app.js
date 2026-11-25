@@ -30,6 +30,7 @@
     data: null, tab: 'pagos', screen: null, cartera: null,
     auth: params.has('olvido') ? 'olvido' : (params.has('registro') || params.has('invitacion') ? 'registro' : 'login'), support: '',
     invite: (params.get('invitacion') || '').toUpperCase(), err: '', confirm: null, busy: false,
+    activar: params.get('activar') || '', pendiente: '', inactivo: '',
     doc: null, pages: [], facProp: 0
   };
   try { S.cartera = localStorage.getItem('klyp_cartera'); } catch (e) { /* sin almacenamiento */ }
@@ -132,7 +133,7 @@
     }).catch(function () { throw new Error('Sin conexión. Inténtelo otra vez.'); })
       .then(function (r) {
         return r.json().catch(function () { return {}; }).then(function (j) {
-          if (!r.ok) { var e = new Error(j.error || 'No se ha podido completar. Inténtelo otra vez.'); e.status = r.status; throw e; }
+          if (!r.ok) { var e = new Error(j.error || 'No se ha podido completar. Inténtelo otra vez.'); e.status = r.status; e.code = j.code; throw e; }
           return j;
         });
       });
@@ -172,26 +173,39 @@
     return '<button class="back" data-act="auth" data-v="login">‹ Volver a Entrar</button>' +
       '<header class="stack"><h1>He olvidado mi clave</h1></header>' +
       '<section class="card"><p><b>1.</b> Pida un código de recuperación a KLYP' + (S.support ? ': <b>' + esc(S.support) + '</b>' : '') + '.</p>' +
-      '<p><b>2.</b> Escríbalo aquí con su móvil y elija una clave nueva.</p></section>' +
+      '<p><b>2.</b> Escríbalo aquí con su correo o su móvil y elija una clave nueva.</p></section>' +
       (S.err ? '<p class="err" role="alert">' + esc(S.err) + '</p>' : '') +
       '<form id="form-olvido" class="stack-lg">' +
-      '<label class="f">Su número de móvil<input type="tel" id="olv-tel" inputmode="tel" autocomplete="tel" required></label>' +
+      '<label class="f">Su correo o su móvil<input type="text" id="olv-tel" autocomplete="username" autocapitalize="none" required></label>' +
       '<label class="f">Código de recuperación<input type="text" id="olv-codigo" maxlength="12" autocapitalize="characters" autocomplete="off" required></label>' +
       '<label class="f">Clave nueva<small>Al menos 6 números o letras. Apúntela.</small>' +
       '<input type="password" id="olv-pin" autocomplete="new-password" required minlength="6"></label>' +
       '<button class="btn primary" type="submit">Guardar la clave y entrar</button></form>';
   }
+  function vRevisar() {
+    return '<header class="stack"><h1>Revise su correo</h1></header>' +
+      '<section class="status-card deal"><span class="dot">' + ICON.deal + '</span><div><p class="lbl">Falta un paso</p>' +
+      '<p>Le hemos enviado un correo a <b>' + esc(S.pendiente) + '</b>. Pulse el enlace que trae para activar su cuenta.</p></div></section>' +
+      '<p class="muted">Si no lo ve en unos minutos, mire en la carpeta de correo no deseado. El enlace vale 48 horas.</p>' +
+      '<button class="btn" data-act="reenviar" data-v="' + esc(S.pendiente) + '">Enviarme el correo otra vez</button>' +
+      '<button class="btn plain" data-act="auth" data-v="login">Ya la he activado: entrar</button>';
+  }
   function vAuth() {
     if (S.auth === 'olvido') return vOlvido();
+    if (S.auth === 'revisar') return vRevisar();
     var reg = S.auth === 'registro';
     return '<header class="stack"><h1>KLYP Alquileres</h1><p class="muted">Lleve la cuenta de sus alquileres desde el móvil.</p></header>' +
       (S.invite ? '<p class="msg">Tiene una invitación. Entre o cree su cuenta para aceptarla.</p>' : '') +
       '<div class="seg"><button data-act="auth" data-v="login" aria-pressed="' + !reg + '">Entrar</button>' +
       '<button data-act="auth" data-v="registro" aria-pressed="' + reg + '">Crear cuenta</button></div>' +
       (S.err ? '<p class="err" role="alert">' + esc(S.err) + '</p>' : '') +
+      (S.inactivo && !reg ? '<button class="btn" data-act="reenviar" data-v="' + esc(S.inactivo) + '">Enviarme otra vez el correo de activación</button>' : '') +
       '<form id="form-auth" class="stack-lg">' +
-      (reg ? '<label class="f">Su nombre<input type="text" id="auth-nombre" autocomplete="name" required></label>' : '') +
-      '<label class="f">Su número de móvil<input type="tel" id="auth-tel" inputmode="tel" autocomplete="tel" required></label>' +
+      (reg ? '<label class="f">Su nombre<input type="text" id="auth-nombre" autocomplete="name" required></label>' +
+        '<label class="f">Su correo electrónico<small>Le enviaremos un enlace para activar la cuenta.</small>' +
+        '<input type="email" id="auth-mail" inputmode="email" autocomplete="email" autocapitalize="none" required></label>' +
+        '<label class="f">Su número de móvil<input type="tel" id="auth-tel" inputmode="tel" autocomplete="tel" required></label>'
+        : '<label class="f">Su correo o su móvil<input type="text" id="auth-tel" autocomplete="username" autocapitalize="none" required></label>') +
       '<label class="f">Clave' + (reg ? '<small>Invéntese una de al menos 6 números o letras y apúntela.</small>' : '') +
       '<input type="password" id="auth-pin" autocomplete="' + (reg ? 'new-password' : 'current-password') + '" required minlength="6"></label>' +
       '<button class="btn primary" type="submit">' + (reg ? 'Crear mi cuenta' : 'Entrar') + '</button></form>' +
@@ -706,7 +720,8 @@
 
   /* ---------- cuenta ---------- */
   function vCuenta() {
-    var d = S.data, pl = d.plan, h = '<header class="stack"><h1>Mi cuenta</h1><p class="muted">' + esc(d.user.name) + ' · ' + esc(d.user.phone) + '</p></header>';
+    var d = S.data, pl = d.plan, h = '<header class="stack"><h1>Mi cuenta</h1><p class="muted">' + esc(d.user.name) +
+      [d.user.email, d.user.phone].filter(Boolean).map(function (x) { return ' · ' + esc(x); }).join('') + '</p></header>';
     if (d.carteras.length > 1) {
       h += '<section class="card"><h2>¿Qué alquileres quiere ver?</h2>' + d.carteras.map(function (c) {
         var on = c.ownerId === d.cartera.ownerId;
@@ -810,7 +825,14 @@
     var b = ev.target.closest('[data-act]'); if (!b) return;
     var act = b.getAttribute('data-act'), id = Number(b.getAttribute('data-id')) || null, ym = Number(b.getAttribute('data-ym')),
       cid = Number(b.getAttribute('data-cid')) || null, p;
-    if (act === 'auth') { S.auth = b.getAttribute('data-v'); S.err = ''; render(false); }
+    if (act === 'auth') { S.auth = b.getAttribute('data-v'); S.err = ''; S.inactivo = ''; render(false); }
+    else if (act === 'reenviar') {
+      if (S.busy) return;
+      S.busy = true;
+      api('POST', '/api/activation/resend', { id: b.getAttribute('data-v') })
+        .then(function () { toast('Le hemos enviado otra vez el correo. Revise también el correo no deseado.'); })
+        .catch(function (e) { toast(e.message); }).then(function () { S.busy = false; });
+    }
     else if (act === 'tab') { S.tab = b.getAttribute('data-tab'); go(null); }
     else if (act === 'abrir') go({ name: 'piso', id: id });
     else if (act === 'editar') go({ name: 'form-piso', id: id });
@@ -990,10 +1012,22 @@
       return { tenant: v('con-inq'), phone: v('con-tel'), email: v('con-mail'), rent: v('con-renta'), startDate: v('con-inicio'), endDate: v('con-fin'), ipcPct: v('con-ipc'), ipcDate: v('con-ipc-fecha') };
     }
     if (f === 'form-auth') {
-      var reg = S.auth === 'registro';
+      var reg = S.auth === 'registro', ident = v('auth-tel');
       if (S.busy) return;
       S.busy = true;
-      api('POST', reg ? '/api/register' : '/api/login', { name: v('auth-nombre'), phone: v('auth-tel'), pin: document.getElementById('auth-pin').value })
+      S.inactivo = '';
+      if (reg) {
+        api('POST', '/api/register', { name: v('auth-nombre'), email: v('auth-mail'), phone: ident, pin: document.getElementById('auth-pin').value, invite: S.invite })
+          .then(function (r) {
+            /* La cuenta queda pendiente: la invitación se acepta al activarla. */
+            S.err = ''; S.invite = ''; S.pendiente = r.email; S.auth = 'revisar';
+            history.replaceState(null, '', '/app'); render(true);
+          })
+          .catch(function (e) { S.err = e.message; render(false); })
+          .then(function () { S.busy = false; });
+        return;
+      }
+      api('POST', '/api/login', { phone: ident, pin: document.getElementById('auth-pin').value })
         .then(function () {
           S.err = '';
           if (!S.invite) return;
@@ -1002,7 +1036,7 @@
           return aceptar(code).catch(function (e) { setTimeout(function () { toast(e.message); }, 300); });
         })
         .then(function () { return load(true); })
-        .catch(function (e) { S.err = e.message; render(false); })
+        .catch(function (e) { S.err = e.message; S.inactivo = e.code === 'inactive' ? ident : ''; render(false); })
         .then(function () { S.busy = false; });
     } else if (f === 'form-piso') {
       var id = S.screen.id, body = id ? {} : datosContrato();
@@ -1078,7 +1112,16 @@
 
   /* ---------- arranque ---------- */
   api('GET', '/api/info').then(function (d) { S.support = d.support || ''; if (!S.data && S.auth === 'olvido') render(false); }).catch(function () { });
-  load(true).then(function () {
+  /* Enlace del correo de activación: activa la cuenta y deja la sesión abierta. */
+  var inicio = Promise.resolve();
+  if (S.activar) {
+    inicio = api('POST', '/api/activate', { token: S.activar }).then(function (r) {
+      if (r.ownerId) S.cartera = String(r.ownerId);
+      S.invite = '';
+      setTimeout(function () { toast('Cuenta activada. ¡Bienvenido a KLYP Alquileres!'); }, 300);
+    }, function (e) { S.err = e.message; S.auth = 'login'; }).then(function () { history.replaceState(null, '', '/app'); });
+  }
+  inicio.then(function () { return load(true); }).then(function () {
     if (S.invite) {
       var code = S.invite; S.invite = '';
       history.replaceState(null, '', '/app');

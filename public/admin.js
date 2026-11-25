@@ -25,7 +25,7 @@
 
   function render() {
     var q = $('buscar').value.trim().toLowerCase();
-    var us = D.users.filter(function (u) { return !q || u.name.toLowerCase().indexOf(q) >= 0 || u.phone.indexOf(q) >= 0; });
+    var us = D.users.filter(function (u) { return !q || u.name.toLowerCase().indexOf(q) >= 0 || u.phone.indexOf(q) >= 0 || (u.email || '').indexOf(q) >= 0; });
     $('stats').innerHTML = '<div class="card"><p class="muted">Usuarios</p><p class="price">' + D.users.length + '</p></div>' +
       D.plans.map(function (p) {
         return '<div class="card"><p class="muted">Plan ' + esc(p.name) + '</p><p class="price">' +
@@ -35,7 +35,9 @@
     $('usuarios').innerHTML = us.length ? us.map(function (u) {
       var p = plan(u.planId);
       return '<tr><td><b>' + esc(u.name) + '</b>' + (u.isAdmin ? ' <span class="pill ok">Admin</span>' : '') + '</td>' +
-        '<td class="num">' + esc(u.phone) + '</td><td class="num">' + fecha(u.createdAt) + '</td><td class="num">' + fecha(u.lastSeen) + '</td>' +
+        '<td class="num">' + (u.phone.indexOf('@') < 0 ? esc(u.phone) : '—') + '</td><td>' + esc(u.email || '—') +
+        (u.activated ? '' : '<br><span class="pill warn">Sin activar</span> <button class="btn plain" data-activar="' + u.id + '">Activar</button>' +
+          (u.email ? ' <button class="btn plain" data-reenviar="' + u.id + '">Reenviar correo</button>' : '')) + '</td><td class="num">' + fecha(u.createdAt) + '</td><td class="num">' + fecha(u.lastSeen) + '</td>' +
         '<td class="num">' + u.properties + ' / ' + tope(limite(u)) + (u.maxProps != null ? ' <span class="pill warn">propio</span>' : '') +
         ' <button class="btn plain" data-ver="' + u.id + '">Ver</button></td><td class="num">' + u.helpers + ' / ' + tope(p.maxHelpers) + '</td>' +
         '<td><select data-plan-user="' + u.id + '" aria-label="Plan de ' + esc(u.name) + '">' + D.plans.map(function (x) {
@@ -50,7 +52,7 @@
         '<td>' + (u.blocked ? '<span class="pill bad">Desactivado</span> <button class="btn" data-bloquear="' + u.id + '" data-v="0">Activar</button>'
           : '<span class="pill ok">Activo</span> <button class="btn plain" data-bloquear="' + u.id + '" data-v="1">Desactivar</button>') + '</td>' +
         '<td><button class="btn" data-reset="' + u.id + '">Código de recuperación</button></td></tr>';
-    }).join('') : '<tr><td colspan="11" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
+    }).join('') : '<tr><td colspan="12" class="muted">' + (D.users.length ? 'Ningún usuario coincide con la búsqueda.' : 'Todavía no se ha dado de alta nadie.') + '</td></tr>';
     $('planes').innerHTML = D.plans.map(function (p) {
       return '<tr><td><input type="text" id="pl-nombre-' + p.id + '" value="' + esc(p.name) + '" maxlength="30" aria-label="Nombre del plan"></td>' +
         '<td><input type="text" id="pl-precio-' + p.id + '" value="' + esc(p.price) + '" maxlength="30" aria-label="Precio"></td>' +
@@ -65,8 +67,9 @@
     SMTP.forEach(function (k) { $('smtp-' + k).value = c[k] || (k === 'security' ? 'starttls' : ''); });
     $('smtp-password').value = '';
     $('smtp-pass-ayuda').textContent = c.hasPassword ? 'Hay una guardada. Déjela vacía para no cambiarla.' : '';
-    $('smtp-estado').innerHTML = c.ready ? '<span class="pill ok">Configurado: las facturas se envían por correo</span>'
-      : '<span class="pill warn">Sin configurar: las facturas solo se pueden enviar desde el móvil</span>';
+    $('smtp-estado').innerHTML = c.ready ? '<span class="pill ok">Configurado: se envían los correos de activación y las facturas</span>'
+      : '<span class="pill bad">Sin configurar: nadie puede crear una cuenta nueva hasta que lo configure</span>';
+    $('aviso-smtp').hidden = c.ready;
   }
   function usuario(id) { return D.users.filter(function (x) { return x.id === Number(id); })[0]; }
   /* Inmuebles de un usuario y su límite propio. */
@@ -128,6 +131,9 @@
     var b = ev.target.closest('button'); if (!b) return;
     var u = b.getAttribute('data-bloquear'), p = b.getAttribute('data-guardar-plan'), rs = b.getAttribute('data-reset');
     var su = b.getAttribute('data-sum'), ver = b.getAttribute('data-ver'), lim = b.getAttribute('data-limite');
+    var act = b.getAttribute('data-activar'), ree = b.getAttribute('data-reenviar');
+    if (act) change(api('PUT', '/api/admin/users/' + act, { activate: true }), 'Cuenta activada. Ya puede entrar.');
+    if (ree) change(api('POST', '/api/admin/users/' + ree + '/activation', {}).then(function (r) { return r; }), 'Correo de activación enviado.');
     if (su) {
       var off = usuario(su).disabled.filter(function (x) { return x !== 'suministros'; });
       if (b.getAttribute('data-v') === '0') off.push('suministros');
