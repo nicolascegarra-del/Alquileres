@@ -12,11 +12,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Alquileres">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:wght@600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<div class="app" id="app"><main id="view" class="stack-lg"><p class="muted">Cargando…</p></main></div>
+<div class="app" id="app">
+  <div class="topline"><span class="marca">KLYP Alquileres</span>
+    <span class="tam"><button data-act="fs" data-v="-1" aria-label="Texto más pequeño">A−</button><button data-act="fs" data-v="1" aria-label="Texto más grande">A+</button></span></div>
+  <main id="view" class="stack-lg"><p class="muted">Cargando…</p></main>
+</div>
 <nav class="tabs" id="tabsbar" aria-label="Secciones" hidden><div class="tabs-in" id="tabs"></div></nav>
 <div class="toast" id="toast" role="status" hidden></div>
 <script src="/app.js"></script>

@@ -21,18 +21,28 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 
 - **Inquilinos por fechas:** cada inmueble guarda una lista de contratos (inquilino, teléfono, renta, fecha de inicio y de fin). Con «Cambiar de inquilino» el anterior queda cerrado la víspera y conserva sus pagos y deudas. Las fechas de dos inquilinos no pueden pisarse. Si uno sale y otro entra dentro del mismo mes, la renta de ese mes se reparte por días (por ejemplo, sale el 15 de mayo: paga 15/31 de la renta; el nuevo paga los 16 días restantes y su día de cobro ese mes es el día que entra). En la ficha, «Corregir el importe de un mes» permite poner otra cantidad a mano.
 - **Subida del IPC:** se apunta el porcentaje y la fecha desde la que aplica (al dar de alta el inmueble o después, en la ficha). La renta sube sola desde la mensualidad de ese mes; los meses anteriores no cambian. Pasada la fecha, la ficha vuelve a mostrar «Sin subida de IPC programada» para apuntar la del año siguiente.
-- **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF o se hacen fotos al papel, una por página; las fotos se convierten en un PDF en el propio móvil (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Impagos.
+- **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF o se hacen fotos al papel, una por página; las fotos se convierten en un PDF en el propio móvil (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Pendiente.
 - **Envío por WhatsApp o correo:** tras guardar, «WhatsApp» y «Correo» abren el mensaje ya escrito, con un enlace al PDF, para el teléfono o el correo del inquilino; solo hay que pulsar Enviar. «Enviar el PDF como archivo» usa el menú de compartir del móvil para adjuntar el documento de verdad. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta o un servidor de correo.
 - **Correo automático (SMTP):** si el administrador configura en `/admin` el servidor de correo, al guardar una factura se envía sola al correo del inquilino con el PDF adjunto (hay una casilla, marcada por defecto, para no enviarla). En la lista, «Correo» la envía o reenvía directamente; si falla, la factura queda marcada con «Correo no enviado» y el motivo. Sin SMTP configurado, «Correo» abre el correo del móvil con el mensaje escrito.
 - **Seguimiento por inmueble:** en Facturas se puede filtrar por inmueble y ver lo pendiente, lo facturado en el año por tipo y lo cobrado. La ficha del inmueble muestra el mismo resumen.
 - **Enlace del PDF:** `/factura/<clave>.pdf` se abre sin iniciar sesión, para que el inquilino pueda verlo. La clave es aleatoria (128 bits); quien tenga el enlace puede ver esa factura.
 
-## Impagos y acuerdos de pago
+## Pantallas y cobros
 
-- **Impagos por persona:** la pestaña agrupa las deudas por inquilino, no por casa. Si en una casa un inquilino debe y el siguiente no, solo aparece el que debe, aunque ya no viva allí.
+- **Pestañas:** Inicio · Pendiente · Facturas · Inmuebles · Cuenta.
+- **Inicio:** panel con lo cobrado, lo pendiente y lo previsto de **este mes**, **los últimos 3 meses** o **el año en curso**; el cobrado se separa en efectivo y banco. Debajo, lo que falta por cobrar este mes.
+- **Cobrar:** se elige el importe (puede ser **parcial**: lo que falta queda pendiente), la fecha (**hoy** u otra) y la forma (**efectivo** o **banco**). Un mes puede tener varios cobros; en la ficha del inmueble se ven todos y se pueden quitar.
+- **Contactar** (desde Pendiente o desde la ficha): teléfono, WhatsApp y correo con el mensaje de recordatorio, y el detalle de lo que debe.
+- **Ficha del inmueble** (desde Inmuebles): inquilinos, cambio de inquilino, IPC, historial de cobros mes a mes, acuerdos, facturas y datos del inmueble.
+- **Tamaño del texto:** botones A− / A+ arriba, o en Cuenta (Pequeño, Normal, Grande, Muy grande). Se guarda en la cuenta del usuario.
+- Los cobros de versiones anteriores pasan solos al nuevo sistema, con la forma de pago sin indicar.
+
+## Pendiente y acuerdos de pago
+
+- **Pendiente por persona:** la pestaña agrupa las deudas por inquilino, no por casa. Si en una casa un inquilino debe y el siguiente no, solo aparece el que debe, aunque ya no viva allí.
 - **Acuerdo de pago:** con un inquilino que debe meses anteriores o facturas, «Hacer un acuerdo de pago» recoge esa deuda (se puede cambiar la cantidad) y pide cuánto pagará al mes en total. Lo que pase de la renta va a la deuda: debe 3.000 €, paga 400 € de renta y acuerdan 600 € al mes, así que van 200 € a la deuda durante 15 meses. Si el inquilino ya no vive allí, todo lo que pague va a la deuda.
-- La renta del mes en curso no entra en el acuerdo: se sigue cobrando aparte en Pagos.
-- Los meses y facturas incluidos dejan de salir sueltos y pasan a «En acuerdo de pago». Los pagos del acuerdo se anotan en la pantalla del acuerdo; la app avisa si va retrasado en las cuotas, y se puede marcar como no cumplido (la deuda que queda sigue en Impagos). Cuando se paga entero, esos meses y facturas pasan a «Pagado con el acuerdo».
+- La renta del mes en curso no entra en el acuerdo: se sigue cobrando aparte, como cualquier mes.
+- Los meses y facturas incluidos dejan de salir sueltos y pasan a «En acuerdo de pago». Los pagos del acuerdo se anotan en la pantalla del acuerdo; la app avisa si va retrasado en las cuotas, y se puede marcar como no cumplido (la deuda que queda sigue en Pendiente). Cuando se paga entero, esos meses y facturas pasan a «Pagado con el acuerdo».
 - «Enviar el acuerdo por WhatsApp» manda al inquilino las condiciones por escrito.
 
 ## Administración de usuarios
@@ -45,7 +55,7 @@ En `/admin`, la tabla de usuarios muestra de cada uno: alta, último acceso, inm
 
 ## Permisos por usuario
 
-Hay tres apartados: **Pagos e impagos**, **Facturas de suministros** e **Inmuebles e inquilinos**.
+Hay tres apartados: **Pagos** (Inicio y Pendiente), **Facturas de suministros** e **Inmuebles e inquilinos**.
 
 - **El propietario** elige, para cada persona que invita, si en cada apartado «no lo ve», «solo puede ver» o «puede ver y anotar», y puede cambiarlo después en **Cuenta**. Así uno puede revisar los pagos y otro subir las facturas.
 - **El administrador**, en `/admin`, puede quitar apartados enteros a cualquier usuario registrado. Ese usuario deja de ver la pestaña y sus funciones, tanto en sus alquileres como en los de quien le haya invitado.

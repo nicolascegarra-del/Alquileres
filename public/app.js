@@ -12,8 +12,8 @@
   };
   /* mod: apartado del que depende la pestaña. Cuenta se ve siempre. */
   var TABS = [
-    { id: 'pagos', mod: 'pagos', label: 'Pagos', svg: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><path d="M7 15h4"/></svg>' },
-    { id: 'impagos', mod: 'pagos', label: 'Impagos', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5"/><path d="M12 17.5v.2"/></svg>' },
+    { id: 'inicio', mod: 'pagos', label: 'Inicio', svg: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="9" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="14" width="8" height="7" rx="2"/></svg>' },
+    { id: 'pendiente', mod: 'pagos', label: 'Pendiente', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.5"/><path d="M12 17.5v.2"/></svg>' },
     { id: 'facturas', mod: 'suministros', label: 'Facturas', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>' },
     { id: 'pisos', mod: 'inmuebles', label: 'Inmuebles', svg: '<svg class="i" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-6h4v6"/></svg>' },
     { id: 'cuenta', label: 'Cuenta', svg: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c1-3.800 4-5.500 7.500-5.500s6.500 1.700 7.500 5.500"/></svg>' }
@@ -27,16 +27,31 @@
 
   var params = new URLSearchParams(location.search);
   var S = {
-    data: null, tab: 'pagos', screen: null, cartera: null,
+    data: null, tab: 'inicio', screen: null, cartera: null, periodo: 'mes', forma: 'banco', cobroFecha: 'hoy',
     auth: params.has('olvido') ? 'olvido' : (params.has('registro') || params.has('invitacion') ? 'registro' : 'login'), support: '',
     invite: (params.get('invitacion') || '').toUpperCase(), err: '', confirm: null, busy: false,
     activar: params.get('activar') || '', pendiente: '', inactivo: '',
     doc: null, pages: [], facProp: 0
   };
-  try { S.cartera = localStorage.getItem('klyp_cartera'); } catch (e) { /* sin almacenamiento */ }
+  try { S.cartera = localStorage.getItem('klyp_cartera'); S.forma = localStorage.getItem('klyp_forma') || 'banco'; } catch (e) { /* sin almacenamiento */ }
 
   var view = document.getElementById('view'), tabsEl = document.getElementById('tabs'), tabsBar = document.getElementById('tabsbar'),
     appEl = document.getElementById('app'), toastEl = document.getElementById('toast'), toastT = null;
+
+  /* ---------- tamaño del texto (se guarda por usuario) ---------- */
+  var ESCALAS = [0.875, 1, 1.15, 1.3], NOMBRES_TAM = ['Pequeño', 'Normal', 'Grande', 'Muy grande'];
+  function aplicarTam(fs) { S.fs = fs; document.documentElement.style.fontSize = (16 * fs) + 'px'; }
+  function fijarTam(fs, guardar) {
+    aplicarTam(fs);
+    try { localStorage.setItem('klyp_fs', String(fs)); } catch (e) { /* sin almacenamiento */ }
+    if (guardar && S.data) { S.data.user.fontScale = fs; api('PUT', '/api/me/prefs', { fontScale: fs }).catch(function () { }); }
+    if (guardar && S.data && S.tab === 'cuenta' && !S.screen) render(false);
+  }
+  function tamano(paso, guardar) {
+    var i = ESCALAS.indexOf(S.fs);
+    fijarTam(ESCALAS[Math.max(0, Math.min(ESCALAS.length - 1, (i < 0 ? 1 : i) + paso))], guardar);
+  }
+  try { aplicarTam(Number(localStorage.getItem('klyp_fs')) || 1); } catch (e) { aplicarTam(1); }
 
   /* ---------- utilidades ---------- */
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -65,10 +80,11 @@
       return estAc(S.ags[mo.agreementId]).done ? { k: 'ok', label: 'Pagado con el acuerdo', sub: 'Saldado con el acuerdo de pago' }
         : { k: 'deal', label: 'En acuerdo de pago', sub: 'Se paga con las cuotas del acuerdo' };
     }
-    if (mo.ym < h.ym) return { k: 'bad', label: 'Sin pagar', sub: 'Mes anterior sin cobrar' };
-    if (due < h.d) return { k: 'bad', label: 'Retrasado ' + dias(h.d - due), sub: 'Tenía que pagar el día ' + due };
-    if (due === h.d) return { k: 'warn', label: 'Se cobra hoy', sub: 'Todavía sin pagar' };
-    return { k: 'warn', label: 'Pendiente', sub: 'Se cobra el día ' + due + ' (faltan ' + dias(due - h.d) + ')' };
+    var parcial = mo.paid > 0 ? 'Pagó ' + eur(mo.paid) + ' · faltan ' + eur(mo.falta) : '';
+    if (mo.ym < h.ym) return { k: 'bad', label: parcial || 'Sin pagar', sub: 'Mes anterior sin cobrar' };
+    if (due < h.d) return { k: 'bad', label: parcial || 'Retrasado ' + dias(h.d - due), sub: 'Tenía que pagar el día ' + due };
+    if (due === h.d) return { k: 'warn', label: parcial || 'Se cobra hoy', sub: 'Todavía sin pagar' };
+    return { k: 'warn', label: parcial || 'Pendiente', sub: 'Se cobra el día ' + due + ' (faltan ' + dias(due - h.d) + ')' };
   }
   function cent(n) { return Math.round(n * 100); }
   /* Situación de un acuerdo de pago. Importes en céntimos para no arrastrar decimales. */
@@ -117,7 +133,7 @@
       p.contracts.forEach(function (c) { c.agreements.forEach(function (a) { a.c = c; a.p = p; S.ags[a.id] = a; }); });
       p.cur = p.contracts.filter(function (c) { return c.active; })[0] || null;
       p.months = [];
-      p.contracts.forEach(function (c) { c.months.forEach(function (mo) { mo.c = c; p.months.push(mo); }); });
+      p.contracts.forEach(function (c) { c.months.forEach(function (mo) { mo.c = c; mo.falta = Math.max(0, cent(mo.rent - mo.paid) / 100); p.months.push(mo); }); });
       p.months.sort(function (a, b) { return a.ym - b.ym; });
       p.now = p.cur ? p.cur.months.filter(function (mo) { return mo.ym === ym; })[0] || null : null;
       p.tenant = p.cur ? p.cur.tenant : 'Sin inquilino';
@@ -153,6 +169,7 @@
   function load(top) {
     return api('GET', '/api/state').then(function (d) {
       S.data = preparar(d); S.cartera = String(d.cartera.ownerId);
+      if (d.user.fontScale && d.user.fontScale !== S.fs) fijarTam(d.user.fontScale, false);
       try { localStorage.setItem('klyp_cartera', S.cartera); } catch (e) { /* sin almacenamiento */ }
       if (S.screen && S.screen.id && !prop(S.screen.id)) S.screen = null;
       render(top);
@@ -165,7 +182,6 @@
     return fn().then(function (res) { return load(false).then(function () { if (msg) toast(msg, undo); return res; }); })
       .catch(fail).then(function (res) { S.busy = false; return res; });
   }
-  function pagar(cid, ym, paid) { return function () { return api('POST', '/api/contracts/' + cid + '/pay', { ym: ym, paid: paid }); }; }
   function facturaPagada(id, paid) { return function () { return api('POST', '/api/utilities/' + id + '/paid', { paid: paid }); }; }
 
   /* ---------- acceso ---------- */
@@ -213,7 +229,7 @@
       '<p class="muted">El móvil se queda con la sesión abierta: no tendrá que escribir la clave cada vez.</p>';
   }
 
-  /* ---------- pagos ---------- */
+  /* ---------- inicio ---------- */
   function fila(p, sub, monto, mo) {
     mo = mo === undefined ? p.now : mo;
     var k = mo ? est(p, mo).k : 'none';
@@ -221,38 +237,63 @@
       '<span><span class="t">' + esc(nom(p)) + '</span><br><span class="s">' + sub + '</span></span>' +
       '<span class="amt">' + monto + '</span></button>';
   }
+  /* Fila que abre la pantalla de cobro de un mes. */
+  function filaCobro(p, mo) {
+    var e = est(p, mo);
+    return '<button class="row" data-act="cobrar" data-id="' + p.id + '" data-cid="' + mo.c.id + '" data-ym="' + mo.ym + '"><span class="dot ' + e.k + '">' + ICON[e.k] + '</span>' +
+      '<span><span class="t">' + esc(nom(p)) + '</span><br><span class="s">' + esc(mo.c.tenant) + (mo.days ? ' · ' + dias(mo.days) : '') +
+      '<br><span class="pill ' + e.k + '">' + e.label + '</span></span></span><span class="amt">' + eur(mo.falta) + '</span></button>';
+  }
   function vacio() {
     return '<section class="card"><h2>Empiece por su primer inmueble</h2><p>Añada el piso, local o garaje que tiene alquilado y la app llevará la cuenta de cada mes.</p>' +
-      (can('inmuebles') ? '<button class="btn primary" data-act="ir" data-screen="form-piso">+ Añadir un inmueble</button>' : '') + '</section>';
+      (can('inmuebles') ? '<button class="btn primary" data-act="tab" data-tab="pisos">Ir a Inmuebles</button>' : '') + '</section>';
   }
-  function vPagos() {
-    var h = hoy(), ps = S.data.properties, total = 0, cobrado = 0, g = { bad: [], warn: [], deal: [], ok: [], none: [] };
-    ps.forEach(function (p) {
-      var ms = p.months.filter(function (mo) { return mo.ym === h.ym; });
-      if (!ms.length) g.none.push({ p: p, mo: null });
-      ms.forEach(function (mo) { total += mo.rent; if (mo.paidOn) cobrado += mo.rent; g[est(p, mo).k].push({ p: p, mo: mo }); });
-    });
-    var head = '<header class="stack"><h1>' + mes(h.ym, true) + ' ' + h.y + '</h1>' +
+  function rango() {
+    var h = hoy();
+    return S.periodo === '3m' ? [h.ym - 2, h.ym] : S.periodo === 'anio' ? [h.y * 12, h.ym] : [h.ym, h.ym];
+  }
+  function vInicio() {
+    var h = hoy(), r = rango(), ps = S.data.properties, prev = 0, cob = 0, efe = 0, ban = 0, otro = 0, venc = 0, acu = 0, falta = [];
+    var head = '<header class="stack"><h1>Inicio</h1>' +
       (S.data.carteras.length > 1 ? '<p class="muted">Alquileres de ' + esc(S.data.cartera.ownerName) + '</p>' : '') + '</header>';
     if (!ps.length) return head + vacio();
-    function grupo(titulo, arr) {
-      if (!arr.length) return '';
-      return '<section class="stack"><h2>' + titulo + ' (' + arr.length + ')</h2><div class="list">' + arr.map(function (x) {
-        var p = x.p, mo = x.mo;
-        if (!mo) return fila(p, 'Sin inquilino este mes', '', null);
-        var e = est(p, mo), ant = deuda(p).filter(function (m2) { return m2.c === mo.c && m2.ym < h.ym; }).length;
-        return fila(p, esc(mo.c.tenant) + (mo.days ? ' · ' + dias(mo.days) : '') + '<br><span class="pill ' + e.k + '">' + e.label + '</span>' +
-          (ant ? ' <span class="pill bad">+ ' + nMeses(ant) + ' sin pagar</span>' : ''), eur(mo.rent), mo);
-      }).join('') + '</div></section>';
-    }
-    var acs = Object.keys(S.ags).map(function (id) { return S.ags[id]; }).filter(function (a) { var e = estAc(a); return !e.done && !a.brokenAt; });
-    var pct = total ? Math.round(cobrado / total * 100) : 0;
-    return head + '<section class="summary" aria-label="Resumen del mes"><p class="muted">Cobrado este mes</p>' +
-      '<p class="big">' + eur(cobrado) + '</p><div class="bar"><span style="width:' + pct + '%"></span></div>' +
-      '<p>Faltan <b>' + eur(total - cobrado) + '</b> de ' + eur(total) + '</p>' +
-      '<button class="btn" data-act="tab" data-tab="impagos">Ver impagos</button></section>' +
-      grupo('Retrasados', g.bad) + grupo('Pendientes', g.warn) + grupo('En acuerdo de pago', g.deal) + grupo('Pagados', g.ok) + grupo('Sin inquilino ahora', g.none) +
-      (acs.length ? '<section class="stack"><h2>Cuotas de acuerdos de pago (' + acs.length + ')</h2><div class="list">' + acs.map(filaAcuerdo).join('') + '</div></section>' : '');
+    ps.forEach(function (p) {
+      p.months.forEach(function (mo) {
+        if (mo.ym === h.ym && mo.falta > 0 && !mo.agreementId) falta.push({ p: p, mo: mo });
+        if (mo.ym < r[0] || mo.ym > r[1] || mo.agreementId) return;
+        prev += mo.rent;
+        mo.receipts.forEach(function (x) {
+          cob += x.amount;
+          if (x.method === 'efectivo') efe += x.amount; else if (x.method === 'banco') ban += x.amount; else otro += x.amount;
+        });
+        if (est(p, mo).k === 'bad') venc += mo.falta;
+      });
+    });
+    Object.keys(S.ags).forEach(function (k) {
+      S.ags[k].payments.forEach(function (x) { var ym = ymDe(x.paidOn); if (ym >= r[0] && ym <= r[1]) acu += x.amount; });
+    });
+    var pend = Math.max(0, prev - cob), pct = prev ? Math.min(100, Math.round(cob / prev * 100)) : 0;
+    var titulo = S.periodo === '3m' ? 'De ' + mes(r[0]) + ' a ' + mes(r[1]) : S.periodo === 'anio' ? 'Año ' + h.y + ' hasta hoy' : mes(h.ym, true) + ' ' + h.y;
+    var anteriores = 0;
+    ps.forEach(function (p) { deuda(p).forEach(function (mo) { if (mo.ym < r[0]) anteriores += mo.falta; }); });
+    return head +
+      '<div class="seg seg3">' + [['mes', 'Este mes'], ['3m', 'Últimos 3 meses'], ['anio', 'Año en curso']].map(function (o) {
+        return '<button data-act="periodo" data-v="' + o[0] + '" aria-pressed="' + (S.periodo === o[0]) + '">' + o[1] + '</button>';
+      }).join('') + '</div>' +
+      '<section class="summary" aria-label="Resumen"><p class="muted">' + titulo + '</p>' +
+      '<div class="cifras"><div><p class="muted">Cobrado</p><p class="big">' + eur(cob) + '</p></div>' +
+      '<div><p class="muted">Pendiente</p><p class="big' + (pend ? ' red' : '') + '">' + eur(pend) + '</p></div></div>' +
+      '<div class="bar"><span style="width:' + pct + '%"></span></div>' +
+      '<div class="kv"><span>Previsto</span><b class="r">' + eur(prev) + '</b></div>' +
+      '<div class="kv"><span>Cobrado en efectivo</span><b class="r">' + eur(efe) + '</b></div>' +
+      '<div class="kv"><span>Cobrado por banco</span><b class="r">' + eur(ban) + '</b></div>' +
+      (otro ? '<div class="kv"><span>Cobrado sin indicar cómo</span><b class="r">' + eur(otro) + '</b></div>' : '') +
+      (venc ? '<div class="kv"><span>De lo pendiente, ya vencido</span><b class="r red">' + eur(venc) + '</b></div>' : '') +
+      (acu ? '<div class="kv"><span>Cuotas de acuerdos cobradas</span><b class="r">' + eur(acu) + '</b></div>' : '') + '</section>' +
+      '<section class="stack"><h2>Falta por cobrar en ' + mes(h.ym) + '</h2>' +
+      (falta.length ? '<div class="list">' + falta.map(function (x) { return filaCobro(x.p, x.mo); }).join('') + '</div>'
+        : '<p class="muted">Todo lo de este mes está cobrado.</p>') + '</section>' +
+      (anteriores > 0.004 ? '<button class="btn" data-act="tab" data-tab="pendiente">Pendiente de meses anteriores: ' + eur(anteriores) + '</button>' : '');
   }
   function filaAcuerdo(a) {
     var e = estAc(a);
@@ -261,27 +302,34 @@
       '<span class="amt">' + eur(e.left) + '</span></button>';
   }
 
-  /* ---------- impagos ---------- */
-  function vImpagos() {
+  /* ---------- pendiente ---------- */
+  /* Lo que debe un inquilino: meses vencidos (lo que falta), facturas y acuerdos sin terminar. */
+  function debeDe(p, c) {
+    var d = deuda(p).filter(function (mo) { return mo.c === c; });
+    var u = sinPagar(p.id).filter(function (x) { return x.contractId === c.id; });
+    var ags = c.agreements.filter(function (a) { return !estAc(a).done; });
+    return { d: d, u: u, ags: ags, t: suma(d, 'falta') + suma(u, 'amount') + ags.reduce(function (acc, a) { return acc + estAc(a).left; }, 0) };
+  }
+  function lineaMes(mo) {
+    return '<b>Alquiler de ' + mes(mo.ym) + '</b><br>' + (mo.paid ? 'Faltan ' + eur(mo.falta) + ' de ' + eur(mo.rent) : eur(mo.rent)) + (mo.days ? ' (' + dias(mo.days) + ')' : '');
+  }
+  function vPendiente() {
     var lista = [], sin = [], total = 0;
     S.data.properties.forEach(function (p) {
       var tiene = false;
       p.contracts.forEach(function (c) {
-        var d = deuda(p).filter(function (mo) { return mo.c === c; });
-        var u = sinPagar(p.id).filter(function (x) { return x.contractId === c.id; });
-        var ags = c.agreements.filter(function (a) { return !estAc(a).done; });
-        var t = suma(d, 'rent') + suma(u, 'amount') + ags.reduce(function (acc, a) { return acc + estAc(a).left; }, 0);
-        if (cent(t) > 0) { lista.push({ p: p, c: c, d: d, u: u, ags: ags, t: t }); total += t; tiene = true; }
+        var x = debeDe(p, c);
+        if (cent(x.t) > 0) { x.p = p; x.c = c; lista.push(x); total += x.t; tiene = true; }
       });
       if (!tiene) sin.push(p);
     });
     lista.sort(function (a, b) { return b.t - a.t; });
-    var h = '<header><h1>Impagos</h1></header>';
+    var h = '<header><h1>Pendiente</h1></header>';
     if (!S.data.properties.length) return h + vacio();
     if (!lista.length) {
       h += '<section class="status-card ok"><span class="dot">' + ICON.ok + '</span><div><p class="lbl">Todo cobrado</p><p>Nadie debe alquiler ni facturas.</p></div></section>';
     } else {
-      h += '<section class="summary" aria-label="Total sin cobrar"><p class="muted">Le deben en total</p><p class="big red">' + eur(total) + '</p>' +
+      h += '<section class="summary" aria-label="Total pendiente"><p class="muted">Le deben en total</p><p class="big red">' + eur(total) + '</p>' +
         '<p><b>' + lista.length + (lista.length === 1 ? ' persona' : ' personas') + '</b> con deudas</p></section>' +
         '<section class="stack">' + lista.map(function (x) {
           var p = x.p, c = x.c, fuera = !c.active && c.endDate && c.endDate < S.data.today;
@@ -289,8 +337,8 @@
             (fuera ? ' · <b>ya no vive aquí</b> (salió el ' + fechaC(c.endDate) + ')' : '') + '</p>' +
             '<p class="owe">Debe <b>' + eur(x.t) + '</b></p>' +
             x.d.map(function (mo) {
-              return '<div class="kv"><span><b>Alquiler de ' + mes(mo.ym) + '</b><br>' + eur(mo.rent) + (mo.days ? ' (' + dias(mo.days) + ')' : '') + '</span>' +
-                (can('pagos') ? '<button class="btn mini" data-act="cobrar" data-id="' + p.id + '" data-cid="' + c.id + '" data-ym="' + mo.ym + '">Cobrado</button>' : '') + '</div>';
+              return '<div class="kv"><span>' + lineaMes(mo) + '</span>' +
+                (can('pagos') ? '<button class="btn mini" data-act="cobrar" data-id="' + p.id + '" data-cid="' + c.id + '" data-ym="' + mo.ym + '">Cobrar</button>' : '') + '</div>';
             }).join('') +
             x.u.map(function (u) {
               return '<div class="kv"><span><b>Factura de ' + esc(tipo(u).toLowerCase()) + '</b><br>' + eur(u.amount) + ' · ' + fechaC(u.billDate) + '</span>' +
@@ -301,8 +349,8 @@
               return '<div class="kv"><span><b>Acuerdo de pago</b> · quedan ' + eur(e.left) + '<br><span class="pill ' + e.k + '">' + e.label + '</span></span>' +
                 '<button class="btn mini" data-act="acuerdo" data-id="' + p.id + '" data-aid="' + a.id + '">Ver</button></div>';
             }).join('') +
-            ((x.d.some(function (mo) { return mo.ym < hoy().ym; }) || x.u.length) && can('pagos') ? '<button class="btn primary" data-act="nuevo-acuerdo" data-id="' + p.id + '" data-cid="' + c.id + '">Hacer un acuerdo de pago</button>' : '') +
-            '<button class="btn" data-act="abrir" data-id="' + p.id + '">Ver ficha y contactar</button></article>';
+            ((x.d.some(function (mo) { return mo.ym < hoy().ym; }) || x.u.length) && can('pagos') ? '<button class="btn" data-act="nuevo-acuerdo" data-id="' + p.id + '" data-cid="' + c.id + '">Hacer un acuerdo de pago</button>' : '') +
+            '<button class="btn primary" data-act="contactar" data-id="' + p.id + '" data-cid="' + c.id + '">Contactar</button></article>';
         }).join('') + '</section>';
     }
     if (sin.length) {
@@ -312,51 +360,88 @@
     return h;
   }
 
-  /* ---------- ficha del inmueble ---------- */
-  function vPiso(id) {
-    var p = prop(id), c = p.cur, mo = p.now, h, pagos = lv('pagos') >= 1;
-    var d = c ? deuda(p).filter(function (m2) { return m2.c === c; }) : [];
-    var fu = c ? sinPagar(id).filter(function (u) { return u.contractId === c.id; }) : [];
-    var partes = [];
-    if (d.length) partes.push('el alquiler de ' + listaMeses(d) + ' (' + eur(suma(d, 'rent')) + ')');
-    if (fu.length) partes.push((fu.length === 1 ? 'una factura' : fu.length + ' facturas') + ' de suministros (' + eur(suma(fu, 'amount')) + ')');
-    if (c) c.agreements.forEach(function (a) { var ea = estAc(a); if (!ea.done && !a.brokenAt && ea.thisMonth) partes.push('la cuota del acuerdo de pago (' + eur(ea.thisMonth) + ')'); });
+  /* ---------- contactar ---------- */
+  function vContacto(sc) {
+    var p = prop(sc.id), c = p && contrato(p, sc.cid);
+    if (!c) return vPendiente();
+    var x = debeDe(p, c), partes = [], fuera = !c.active && c.endDate && c.endDate < S.data.today;
+    if (x.d.length) partes.push('el alquiler de ' + listaMeses(x.d) + ' (' + eur(suma(x.d, 'falta')) + ')');
+    if (x.u.length) partes.push((x.u.length === 1 ? 'una factura' : x.u.length + ' facturas') + ' de suministros (' + eur(suma(x.u, 'amount')) + ')');
+    c.agreements.forEach(function (a) { var ea = estAc(a); if (!ea.done && !a.brokenAt && ea.thisMonth) partes.push('la cuota del acuerdo de pago (' + eur(ea.thisMonth) + ')'); });
     var msg = partes.length ? 'Hola ' + c.tenant.split(' ')[0] + ', le recuerdo que tiene pendiente de pago ' + partes.join(' y ') + ' de ' + p.address + '. Gracias.' : '';
+    var tel = telLimpio(c.phone);
+    var h = '<button class="back" data-act="volver">‹ Volver</button>' +
+      '<header class="stack"><h1>' + esc(c.tenant) + '</h1><p class="muted">' + esc(nom(p)) + (fuera ? ' · ya no vive aquí' : '') + '</p></header>' +
+      '<section class="card"><h2>Contacto</h2>' +
+      (tel ? '<p class="phone">' + esc(c.phone) + '</p><div class="btn-row"><a class="btn" href="tel:+' + tel + '">Llamar</a>' +
+        '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + tel + (msg ? '?text=' + encodeURIComponent(msg) : '') + '">WhatsApp</a></div>'
+        : '<p class="muted">No tiene apuntado su teléfono.</p>') +
+      (c.email ? '<a class="btn plain" href="mailto:' + encodeURIComponent(c.email) + (msg ? '?subject=' + encodeURIComponent('Pagos pendientes · ' + p.address) + '&body=' + encodeURIComponent(msg) : '') + '">Correo: ' + esc(c.email) + '</a>' : '') +
+      (msg ? '<p class="muted">Mensaje de recordatorio:</p><p class="msg">' + esc(msg) + '</p>' : '') + '</section>';
+    if (cent(x.t) > 0) {
+      h += '<section class="card"><h2>Lo que debe: ' + eur(x.t) + '</h2>' +
+        x.d.map(function (mo) { return '<div class="kv"><span>' + lineaMes(mo) + '</span></div>'; }).join('') +
+        x.u.map(function (u) { return '<div class="kv"><span>Factura de ' + esc(tipo(u).toLowerCase()) + ' del ' + fechaC(u.billDate) + '</span><b class="r">' + eur(u.amount) + '</b></div>'; }).join('') +
+        x.ags.map(function (a) {
+          var e = estAc(a);
+          return '<div class="kv"><span>Acuerdo de pago · quedan ' + eur(e.left) + '<br><span class="pill ' + e.k + '">' + e.label + '</span></span>' +
+            '<button class="btn mini" data-act="acuerdo" data-id="' + p.id + '" data-aid="' + a.id + '">Ver</button></div>';
+        }).join('') + '</section>';
+    }
+    return h;
+  }
+
+  /* ---------- cobrar ---------- */
+  function vCobro(sc) {
+    var p = prop(sc.id), c = p && contrato(p, sc.cid), mo = c && c.months.filter(function (m) { return m.ym === sc.ym; })[0];
+    var h = '<button class="back" data-act="volver">‹ Volver</button>';
+    if (!mo) return h + '<p class="msg">Ese mes ya no existe.</p>';
+    h += '<header class="stack"><h1>Cobrar ' + mes(mo.ym) + '</h1><p class="muted">' + esc(c.tenant) + ' · ' + esc(nom(p)) + '</p></header>' +
+      '<section class="card"><div class="kv"><span>Alquiler de ' + mes(mo.ym) + (mo.days ? ' (' + dias(mo.days) + ')' : '') + '</span><b class="r">' + eur(mo.rent) + '</b></div>' +
+      (mo.paid ? '<div class="kv"><span>Ya cobrado</span><b class="r">' + eur(mo.paid) + '</b></div>' : '') +
+      '<div class="kv"><span>Falta</span><b class="r">' + eur(mo.falta) + '</b></div></section>';
+    if (mo.falta <= 0) return h + '<p class="msg">Este mes ya está cobrado del todo.</p>';
+    return h + '<form id="form-cobro" class="stack-lg">' +
+      '<label class="f">Importe cobrado (€)<small>Si le ha pagado solo una parte, escriba lo que ha pagado; el resto queda pendiente.</small>' +
+      '<input type="number" id="cob-importe" inputmode="decimal" min="0.01" step="0.01" required value="' + (cent(mo.falta) / 100) + '"></label>' +
+      '<div class="f"><span>¿Cuándo lo ha cobrado?</span><div class="seg">' +
+      '<button type="button" data-act="cobro-fecha" data-v="hoy" aria-pressed="true">Hoy</button>' +
+      '<button type="button" data-act="cobro-fecha" data-v="otra" aria-pressed="false">Otra fecha</button></div>' +
+      '<input type="date" id="cob-fecha" max="' + S.data.today + '" value="' + S.data.today + '" hidden></div>' +
+      '<div class="f"><span>¿Cómo?</span><div class="seg">' +
+      '<button type="button" data-act="cobro-forma" data-v="efectivo" aria-pressed="' + (S.forma === 'efectivo') + '">Efectivo</button>' +
+      '<button type="button" data-act="cobro-forma" data-v="banco" aria-pressed="' + (S.forma === 'banco') + '">Banco</button></div></div>' +
+      '<button class="btn primary" type="submit">Guardar el cobro</button></form>';
+  }
+
+  /* ---------- ficha del inmueble (gestión) ---------- */
+  function vPiso(id) {
+    var p = prop(id), c = p.cur, h, pagos = lv('pagos') >= 1, edit = can('inmuebles');
     h = '<button class="back" data-act="volver">‹ Volver</button>' +
       '<header class="stack"><h1>' + esc(nom(p)) + '</h1><p class="muted">' + esc(p.tenant) + (p.alias ? ' · ' + esc(p.address) : '') + '</p></header>';
-    if (!c) {
-      h += '<section class="status-card none"><span class="dot">' + ICON.none + '</span><div><p class="lbl">Sin inquilino</p><p>Ahora mismo no hay nadie de alquiler.</p></div></section>';
-    } else if (pagos && mo) {
-      var e = est(p, mo);
-      h += '<section class="status-card ' + e.k + '"><span class="dot">' + ICON[e.k] + '</span><div><p class="lbl">' + e.label + '</p><p>' +
-        mes(mo.ym, true) + ' · ' + e.sub + ' · ' + eur(mo.rent) + '</p></div></section>';
-      if (can('pagos')) {
-        h += mo.paidOn
-          ? '<button class="btn plain" data-act="descobrar" data-id="' + id + '" data-cid="' + c.id + '" data-ym="' + mo.ym + '">Me equivoqué, no ha pagado</button>'
-          : '<button class="btn good" data-act="cobrar" data-id="' + id + '" data-cid="' + c.id + '" data-ym="' + mo.ym + '">' + ICON.ok + ' Ha pagado ' + mes(mo.ym) + '</button>';
-      }
-    }
-    if (c) {
-      var tel = telLimpio(c.phone);
-      h += '<section class="card"><h2>Contacto</h2>';
-      if (tel) {
-        h += '<p class="phone">' + esc(c.phone) + '</p><div class="btn-row"><a class="btn" href="tel:+' + tel + '">Llamar</a>' +
-          '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + tel + (msg ? '?text=' + encodeURIComponent(msg) : '') + '">WhatsApp</a></div>';
-      } else {
-        h += '<p class="muted">No ha apuntado el teléfono del inquilino.</p>';
-      }
-      if (msg) h += '<p class="muted">Mensaje de recordatorio que se envía por WhatsApp:</p><p class="msg">' + esc(msg) + '</p>';
-      h += '</section>';
-    }
+    h += '<section class="card"><h2>Inquilinos</h2>' + (p.contracts.length ? '' : '<p class="muted">Todavía no ha tenido ninguno.</p>') +
+      p.contracts.slice().reverse().map(function (k) {
+        var fin = k.endDate && k.endDate < S.data.today, r = k.nextRaise;
+        return '<div class="sub"><p><b>' + esc(k.tenant) + '</b> ' + (k.active ? '<span class="pill ok">Actual</span>' : fin ? '<span class="pill none">Anterior</span>' : '<span class="pill warn">Entrará</span>') + '</p>' +
+          '<p class="muted">' + periodo(k) + (k.rent != null ? ' · ' + eur(k.rent) + ' al mes' : '') + (k.phone ? ' · ' + esc(k.phone) : '') + '</p>' +
+          (r ? '<p>Subida del IPC del ' + String(r.pct).replace('.', ',') + ' %: <b>' + eur(r.rent) + '</b> desde ' + mes(r.fromYm) + '.</p>'
+            : (!fin && k.rent != null ? '<p class="muted">Sin subida de IPC programada.</p>' : '')) +
+          '<div class="btn-row">' + (edit ? '<button class="btn mini" data-act="editar-contrato" data-id="' + id + '" data-cid="' + k.id + '">Cambiar datos</button>' +
+            (fin ? '' : '<button class="btn mini" data-act="ipc" data-id="' + id + '" data-cid="' + k.id + '">Subida IPC</button>') : '') +
+          '<button class="btn mini plain" data-act="contactar" data-id="' + id + '" data-cid="' + k.id + '">Contactar</button></div></div>';
+      }).join('') +
+      (edit ? '<button class="btn" data-act="nuevo-contrato" data-id="' + id + '">' + (c ? 'Cambiar de inquilino' : '+ Añadir inquilino') + '</button>' : '') + '</section>';
     if (pagos && p.months.length) {
       h += '<section class="card"><h2>Mes a mes</h2>' + p.months.slice().reverse().slice(0, 12).map(function (m2) {
         var s = est(p, m2);
-        return '<div class="kv"><span><b>' + mes(m2.ym, true) + '</b> · ' + eur(m2.rent) + (m2.days ? ' (' + dias(m2.days) + ')' : '') +
+        return '<div class="sub"><div class="kv0"><span><b>' + mes(m2.ym, true) + '</b> · ' + eur(m2.rent) + (m2.days ? ' (' + dias(m2.days) + ')' : '') +
           (m2.custom ? ' (corregido)' : '') + (m2.c !== c ? ' · ' + esc(m2.c.tenant) : '') +
-          '<br><span class="pill ' + s.k + '">' + (m2.paidOn ? 'Pagó el ' + fecha(m2.paidOn) : s.label) + '</span></span>' +
-          (can('pagos') && !m2.agreementId ? (m2.paidOn
-            ? '<button class="btn mini plain" data-act="descobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Quitar</button>'
-            : '<button class="btn mini" data-act="cobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Cobrado</button>') : '') + '</div>';
+          '<br><span class="pill ' + s.k + '">' + s.label + '</span></span>' +
+          (can('pagos') && !m2.agreementId && m2.falta > 0 ? '<button class="btn mini" data-act="cobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Cobrar</button>' : '') + '</div>' +
+          m2.receipts.map(function (x) {
+            return '<div class="kv0 cobro"><span>Cobró ' + eur(x.amount) + ' el ' + fecha(x.paidOn) + (x.method ? ' · ' + x.method : '') + '</span>' +
+              (can('pagos') && !m2.agreementId ? '<button class="btn mini plain" data-act="quitar-cobro" data-rid="' + x.id + '">Quitar</button>' : '') + '</div>';
+          }).join('') + '</div>';
       }).join('') + (can('pagos') ? '<button class="btn plain" data-act="importe" data-id="' + id + '">Corregir el importe de un mes</button>' : '') + '</section>';
       var conAc = p.contracts.filter(function (k) { return k.agreements.length; }), conDeuda = p.contracts.filter(function (k) {
         return deuda(p).some(function (m3) { return m3.c === k && m3.ym < hoy().ym; }) || sinPagar(id).some(function (u) { return u.contractId === k.id; });
@@ -388,18 +473,6 @@
         (can('suministros') ? '<button class="btn" data-act="nueva-factura" data-id="' + id + '">Subir una factura</button>' : '') +
         '<button class="btn plain" data-act="fac-prop" data-id="' + id + '">Ver todas las facturas de este inmueble</button></section>';
     }
-    var edit = can('inmuebles');
-    h += '<section class="card"><h2>Inquilinos</h2>' + (p.contracts.length ? '' : '<p class="muted">Todavía no ha tenido ninguno.</p>') +
-      p.contracts.slice().reverse().map(function (k) {
-        var fin = k.endDate && k.endDate < S.data.today, r = k.nextRaise;
-        return '<div class="sub"><p><b>' + esc(k.tenant) + '</b> ' + (k.active ? '<span class="pill ok">Actual</span>' : fin ? '<span class="pill none">Anterior</span>' : '<span class="pill warn">Entrará</span>') + '</p>' +
-          '<p class="muted">' + periodo(k) + (k.rent != null ? ' · ' + eur(k.rent) + ' al mes' : '') + '</p>' +
-          (r ? '<p>Subida del IPC del ' + String(r.pct).replace('.', ',') + ' %: <b>' + eur(r.rent) + '</b> desde ' + mes(r.fromYm) + '.</p>'
-            : (!fin && k.rent != null ? '<p class="muted">Sin subida de IPC programada.</p>' : '')) +
-          (edit ? '<div class="btn-row"><button class="btn mini" data-act="editar-contrato" data-id="' + id + '" data-cid="' + k.id + '">Cambiar datos</button>' +
-            (fin ? '' : '<button class="btn mini" data-act="ipc" data-id="' + id + '" data-cid="' + k.id + '">Subida IPC</button>') + '</div>' : '') + '</div>';
-      }).join('') +
-      (edit ? '<button class="btn" data-act="nuevo-contrato" data-id="' + id + '">' + (c ? 'Cambiar de inquilino' : '+ Añadir inquilino') + '</button>' : '') + '</section>';
     if (lv('inmuebles') >= 1) {
       h += '<section class="card"><h2>Datos del inmueble</h2>' +
         (p.alias ? '<div class="kv"><span>Nombre corto</span><b class="r">' + esc(p.alias) + '</b></div>' : '') +
@@ -617,15 +690,15 @@
   function vNuevoAcuerdo(sc) {
     var p = prop(sc.id), c = contrato(p, sc.cid), h = hoy();
     var d = deuda(p).filter(function (mo) { return mo.c === c && mo.ym < h.ym; }), u = sinPagar(p.id).filter(function (x) { return x.contractId === c.id; });
-    var total = suma(d, 'rent') + suma(u, 'amount'), actual = deuda(p).filter(function (mo) { return mo.c === c && mo.ym === h.ym; })[0];
+    var total = suma(d, 'falta') + suma(u, 'amount'), actual = deuda(p).filter(function (mo) { return mo.c === c && mo.ym === h.ym; })[0];
     if (!cent(total)) return '<button class="back" data-act="volver">‹ Volver</button><p class="msg">' + esc(c.tenant) + ' no tiene deudas pendientes.</p>';
     return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Acuerdo de pago</h1>' +
       '<p class="muted">' + esc(c.tenant) + ' · ' + esc(nom(p)) + '</p></header>' +
       '<section class="card"><h2>Lo que debe hoy: ' + eur(total) + '</h2>' +
-      d.map(function (mo) { return '<div class="kv"><span>Alquiler de ' + mes(mo.ym) + '</span><b class="r">' + eur(mo.rent) + '</b></div>'; }).join('') +
+      d.map(function (mo) { return '<div class="kv"><span>Alquiler de ' + mes(mo.ym) + (mo.paid ? ' (lo que falta)' : '') + '</span><b class="r">' + eur(mo.falta) + '</b></div>'; }).join('') +
       u.map(function (x) { return '<div class="kv"><span>Factura de ' + esc(tipo(x).toLowerCase()) + ' del ' + fechaC(x.billDate) + '</span><b class="r">' + eur(x.amount) + '</b></div>'; }).join('') +
-      '<p class="muted">Todo esto pasa al acuerdo y deja de aparecer suelto en Impagos.' +
-      (actual ? ' La renta de ' + mes(h.ym) + ' (' + eur(actual.rent) + ') no entra: se cobra aparte, como siempre.' : '') + '</p></section>' +
+      '<p class="muted">Todo esto pasa al acuerdo y deja de aparecer suelto en Pendiente.' +
+      (actual ? ' La renta de ' + mes(h.ym) + ' (' + eur(actual.falta) + ') no entra: se cobra aparte, como siempre.' : '') + '</p></section>' +
       '<form id="form-acuerdo" class="stack-lg">' +
       '<label class="f">Deuda que se paga con el acuerdo (€)<small>Normalmente lo que debe. Puede cambiarlo si han acordado otra cantidad.</small>' +
       '<input type="number" id="ac-total" inputmode="decimal" min="0.01" step="0.01" required value="' + (cent(total) / 100) + '"></label>' +
@@ -658,7 +731,7 @@
   }
   function vAcuerdo(sc) {
     var a = S.ags[sc.aid];
-    if (!a) return vPagos();
+    if (!a) return vInicio();
     var e = estAc(a), renta = rentaEn(a.c, a.startYm), edit = can('pagos'), tel = telLimpio(a.c.phone);
     var meses = a.p.months.filter(function (mo) { return mo.agreementId === a.id; });
     var facts = S.data.utilities.filter(function (u) { return u.agreementId === a.id; });
@@ -699,7 +772,7 @@
     }
     if (edit && !a.payments.length) {
       h += S.confirm === 'a' + a.id
-        ? '<p class="err">¿Seguro? La deuda vuelve a aparecer suelta en Impagos.</p><div class="btn-row">' +
+        ? '<p class="err">¿Seguro? La deuda vuelve a aparecer suelta en Pendiente.</p><div class="btn-row">' +
         '<button class="btn danger" data-act="anular-acuerdo-si" data-id="' + a.p.id + '" data-aid="' + a.id + '">Sí, anularlo</button><button class="btn plain" data-act="borrar-no">No</button></div>'
         : '<button class="btn plain" data-act="anular-acuerdo" data-aid="' + a.id + '">Anular el acuerdo (si se apuntó por error)</button>';
     }
@@ -749,6 +822,10 @@
     } else {
       h += '<section class="card"><h2>Está ayudando a ' + esc(d.cartera.ownerName) + '</h2><p>' + esc(resumen(d.cartera.perms)) + '.</p></section>';
     }
+    h += '<section class="card"><h2>Tamaño del texto</h2><p class="muted">Se guarda en su cuenta: lo verá igual en todos sus dispositivos.</p>' +
+      '<div class="seg seg4">' + ESCALAS.map(function (x, i) {
+        return '<button data-act="fs-set" data-v="' + x + '" aria-pressed="' + (S.fs === x) + '" style="font-size:' + (0.8 + i * 0.12) + 'rem">' + NOMBRES_TAM[i] + '</button>';
+      }).join('') + '</div></section>';
     h += '<section class="card"><h2>Tengo un código de invitación</h2><form id="form-codigo" class="stack">' +
       '<label class="f">Código<input type="text" id="codigo" maxlength="12" autocapitalize="characters" autocomplete="off" required></label>' +
       '<button class="btn" type="submit">Aceptar invitación</button></form></section>' +
@@ -803,11 +880,13 @@
       else if (s && s.name === 'nueva-factura') h = vNuevaFactura(s.id);
       else if (s && s.name === 'factura-ok') h = vFacturaOk(s);
       else if (s && s.name === 'nuevo-acuerdo') h = vNuevoAcuerdo(s);
+      else if (s && s.name === 'cobro') h = vCobro(s);
+      else if (s && s.name === 'contacto') h = vContacto(s);
       else if (s && s.name === 'acuerdo') h = vAcuerdo(s);
       else if (s && s.name === 'importe') h = vImporte(s);
       else if (s && s.name === 'invitar') h = vInvitar(s);
       else if (s && s.name === 'invitado') h = vInvitado(s);
-      else h = { pagos: vPagos, impagos: vImpagos, facturas: vFacturas, pisos: vPisos, cuenta: vCuenta }[S.tab]();
+      else h = { inicio: vInicio, pendiente: vPendiente, facturas: vFacturas, pisos: vPisos, cuenta: vCuenta }[S.tab]();
       tabsBar.hidden = false; appEl.classList.remove('no-tabs');
       tabsEl.style.gridTemplateColumns = 'repeat(' + tabs.length + ',1fr)';
       tabsEl.classList.toggle('many', tabs.length > 5);
@@ -841,7 +920,27 @@
     else if (act === 'ipc') go({ name: 'form-ipc', id: id, cid: cid });
     else if (act === 'ir') go({ name: b.getAttribute('data-screen') });
     else if (act === 'permisos') go({ name: 'invitar', uid: Number(b.getAttribute('data-uid')) });
-    else if (act === 'volver') go(S.screen && S.screen.id && S.screen.name !== 'piso' ? { name: 'piso', id: S.screen.id } : null);
+    else if (act === 'volver') {
+      if (S.screen && S.screen.from !== undefined) go(S.screen.from);
+      else go(S.screen && S.screen.id && S.screen.name !== 'piso' && S.tab === 'pisos' ? { name: 'piso', id: S.screen.id } : null);
+    }
+    else if (act === 'periodo') { S.periodo = b.getAttribute('data-v'); render(false); }
+    else if (act === 'contactar') go({ name: 'contacto', id: id, cid: cid, from: S.screen });
+    else if (act === 'cobro-fecha') {
+      S.cobroFecha = b.getAttribute('data-v');
+      [].forEach.call(document.querySelectorAll('[data-act=cobro-fecha]'), function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+      document.getElementById('cob-fecha').hidden = S.cobroFecha !== 'otra';
+    }
+    else if (act === 'cobro-forma') {
+      S.forma = b.getAttribute('data-v');
+      try { localStorage.setItem('klyp_forma', S.forma); } catch (e) { /* sin almacenamiento */ }
+      [].forEach.call(document.querySelectorAll('[data-act=cobro-forma]'), function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+    }
+    else if (act === 'quitar-cobro') {
+      run(function () { return api('DELETE', '/api/receipts/' + b.getAttribute('data-rid')); }, 'Cobro quitado.');
+    }
+    else if (act === 'fs') tamano(Number(b.getAttribute('data-v')), true);
+    else if (act === 'fs-set') fijarTam(Number(b.getAttribute('data-v')), true);
     else if (act === 'nueva-factura') { S.doc = null; S.pages = []; go({ name: 'nueva-factura', id: id }); }
     else if (act === 'mail-auto') {
       if (S.busy) return;
@@ -863,15 +962,14 @@
     }
     else if (act === 'acuerdo-roto' || act === 'acuerdo-activo') {
       run(function () { return api('POST', '/api/agreements/' + b.getAttribute('data-aid') + '/broken', { broken: act === 'acuerdo-roto' }); },
-        act === 'acuerdo-roto' ? 'Acuerdo marcado como no cumplido. La deuda que queda sigue en Impagos.' : 'Acuerdo activo otra vez.');
+        act === 'acuerdo-roto' ? 'Acuerdo marcado como no cumplido. La deuda que queda sigue en Pendiente.' : 'Acuerdo activo otra vez.');
     }
     else if (act === 'anular-acuerdo') { S.confirm = 'a' + b.getAttribute('data-aid'); render(false); }
     else if (act === 'anular-acuerdo-si') {
       S.confirm = null;
       run(function () { return api('DELETE', '/api/agreements/' + b.getAttribute('data-aid')).then(function () { S.screen = { name: 'piso', id: id }; }); }, 'Acuerdo anulado.');
     }
-    else if (act === 'cobrar') { p = prop(id); run(pagar(cid, ym, true), 'Anotado: ' + nom(p) + ' ha pagado ' + mes(ym) + '.', function () { run(pagar(cid, ym, false)); }); }
-    else if (act === 'descobrar') { run(pagar(cid, ym, false), 'Pago de ' + mes(ym) + ' quitado.', function () { run(pagar(cid, ym, true)); }); }
+    else if (act === 'cobrar') { S.cobroFecha = 'hoy'; go({ name: 'cobro', id: id, cid: cid, ym: ym, from: S.screen }); }
     else if (act === 'factura-pagada') { run(facturaPagada(id, true), 'Factura anotada como pagada.', function () { run(facturaPagada(id, false)); }); }
     else if (act === 'factura-impagada') { run(facturaPagada(id, false), 'Pago de la factura quitado.', function () { run(facturaPagada(id, true)); }); }
     else if (act === 'enviada') {
@@ -900,7 +998,7 @@
     else if (act === 'quitar-ipc') {
       run(function () { return api('DELETE', '/api/contracts/' + cid + '/ipc').then(function () { S.screen = { name: 'piso', id: id }; }); }, 'Subida quitada.');
     }
-    else if (act === 'cartera') { S.cartera = String(id); S.tab = 'pagos'; S.screen = null; load(true).catch(fail); }
+    else if (act === 'cartera') { S.cartera = String(id); S.tab = 'inicio'; S.screen = null; load(true).catch(fail); }
     else if (act === 'quitar-ayuda') run(function () { return api('DELETE', '/api/helpers/' + id); }, 'Ya no tiene acceso a sus alquileres.');
     else if (act === 'quitar-invitacion') run(function () { return api('DELETE', '/api/invites/' + b.getAttribute('data-code')); }, 'Invitación anulada.');
     else if (act === 'copiar') {
@@ -910,7 +1008,7 @@
     }
     else if (act === 'salir') {
       api('POST', '/api/logout', {}).catch(function () { }).then(function () {
-        S.data = null; S.cartera = null; S.tab = 'pagos'; S.screen = null; S.err = '';
+        S.data = null; S.cartera = null; S.tab = 'inicio'; S.screen = null; S.err = '';
         try { localStorage.removeItem('klyp_cartera'); } catch (e) { /* sin almacenamiento */ }
         render(true);
       });
@@ -927,7 +1025,7 @@
   });
 
   function aceptar(code) {
-    return api('POST', '/api/invites/accept', { code: code }).then(function (r) { S.cartera = String(r.ownerId); S.tab = 'pagos'; S.screen = null; });
+    return api('POST', '/api/invites/accept', { code: code }).then(function (r) { S.cartera = String(r.ownerId); S.tab = 'inicio'; S.screen = null; });
   }
   function pintarDoc() {
     var el = document.getElementById('doc-lista');
@@ -1068,6 +1166,18 @@
           })
           .then(function (r) { S.doc = null; S.pages = []; S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id }; });
       }).then(function () { window.scrollTo(0, 0); if (aviso) toast(aviso); });
+    } else if (f === 'form-cobro') {
+      var sc = S.screen, nuevo = null;
+      run(function () {
+        return api('POST', '/api/contracts/' + sc.cid + '/receipts', {
+          ym: sc.ym, amount: v('cob-importe'), date: S.cobroFecha === 'otra' ? v('cob-fecha') : S.data.today, method: S.forma
+        }).then(function (r) { nuevo = r; S.screen = sc.from; });
+      }).then(function () {
+        if (!nuevo) return;
+        window.scrollTo(0, 0);
+        toast('Cobro anotado' + (nuevo.left > 0 ? '. Faltan ' + eur(nuevo.left) + ' de ' + mes(sc.ym) + '.' : ': ' + mes(sc.ym) + ' queda cobrado.'),
+          function () { run(function () { return api('DELETE', '/api/receipts/' + nuevo.id); }, 'Cobro quitado.'); });
+      });
     } else if (f === 'form-acuerdo') {
       var sa = S.screen;
       run(function () {
