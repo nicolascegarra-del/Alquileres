@@ -27,6 +27,16 @@
     <section class="stats" id="stats"></section>
     <section class="stack">
       <h2>Usuarios</h2>
+      <form id="alta" class="card stack" style="max-width:640px">
+        <h3>Dar de alta un propietario</h3>
+        <p class="muted">Le llegará un correo con un enlace para crear su contraseña y entrar.</p>
+        <div class="grid2">
+          <label class="f">Nombre<input type="text" id="alta-nombre" maxlength="60" required></label>
+          <label class="f">Correo<input type="email" id="alta-mail" maxlength="120" autocapitalize="none" required></label>
+        </div>
+        <label class="f" style="max-width:300px">Plan<select id="alta-plan"></select></label>
+        <button class="btn primary" type="submit" style="max-width:300px">Dar de alta y enviar correo</button>
+      </form>
       <p class="muted">«Inmuebles» muestra los que tiene dados de alta y su máximo; pulse «Ver» para ver cuáles son y ponerle un límite propio.
         «Facturas de suministros» y «Otros apartados» quitan a ese usuario la pestaña y sus funciones, tanto en sus alquileres como en los de quien le haya invitado.</p>
       <label class="f" style="max-width:360px">Buscar por nombre o móvil<input type="text" id="buscar" autocomplete="off"></label>

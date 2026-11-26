@@ -36,7 +36,8 @@
       var p = plan(u.planId);
       return '<tr><td><b>' + esc(u.name) + '</b>' + (u.isAdmin ? ' <span class="pill ok">Admin</span>' : '') + '</td>' +
         '<td class="num">' + (u.phone.indexOf('@') < 0 ? esc(u.phone) : '—') + '</td><td>' + esc(u.email || '—') +
-        (u.activated ? '' : '<br><span class="pill warn">Sin activar</span> <button class="btn plain" data-activar="' + u.id + '">Activar</button>' +
+        (u.activated ? '' : '<br><span class="pill warn">' + (u.mustSetPin ? 'Sin contraseña todavía' : 'Sin activar') + '</span>' +
+          (u.mustSetPin ? '' : ' <button class="btn plain" data-activar="' + u.id + '">Activar</button>') +
           (u.email ? ' <button class="btn plain" data-reenviar="' + u.id + '">Reenviar correo</button>' : '')) + '</td><td class="num">' + fecha(u.createdAt) + '</td><td class="num">' + fecha(u.lastSeen) + '</td>' +
         '<td class="num">' + u.properties + ' / ' + tope(limite(u)) + (u.maxProps != null ? ' <span class="pill warn">propio</span>' : '') +
         ' <button class="btn plain" data-ver="' + u.id + '">Ver</button></td><td class="num">' + u.helpers + ' / ' + tope(p.maxHelpers) + '</td>' +
@@ -87,13 +88,32 @@
         '<label class="f" style="max-width:420px">Límite de inmuebles para este usuario<small>Déjelo vacío para usar el de su plan ' + esc(p.name) + ' (' + tope(p.maxProperties) + '). ' +
         'Si pone un número, vale solo para este usuario, cambie o no de plan.</small>' +
         '<input type="number" id="detalle-limite" min="0" placeholder="El del plan (' + tope(p.maxProperties) + ')" value="' + (u.maxProps == null ? '' : u.maxProps) + '"></label>' +
-        '<button class="btn primary" style="max-width:420px" data-limite="' + u.id + '">Guardar límite</button>';
+        '<button class="btn primary" style="max-width:420px" data-limite="' + u.id + '">Guardar límite</button>' +
+        '<div class="card stack peligro"><h3>Borrar datos de este usuario</h3>' +
+        (u.countFrom ? '<p>Ahora cuenta desde el <b>' + fecha(u.countFrom) + '</b>: los meses anteriores no aparecen.</p>' : '') +
+        '<label class="f" style="max-width:520px">¿Qué quiere borrar?<small>«Empezar de cero» borra cobros, acuerdos y facturas.</small><select id="wipe-mode">' +
+        '<option value="datos">Empezar de cero (se conservan inmuebles e inquilinos)</option>' +
+        '<option value="todo">Borrar todo (también inmuebles e inquilinos)</option></select></label>' +
+        '<label class="f" style="max-width:300px">Contar desde<small>Los meses anteriores a esta fecha no aparecerán ni contarán como deuda. Vacío: sin límite.</small>' +
+        '<input type="date" id="wipe-desde" value="' + (new Date().getFullYear() + 1) + '-01-01"></label>' +
+        '<label class="f" style="max-width:420px">Para confirmar, escriba <b>' + esc((u.email || u.phone).toLowerCase()) + '</b><input type="text" id="wipe-confirm" autocomplete="off" autocapitalize="none"></label>' +
+        '<p class="err">No se puede deshacer. Antes, haga una copia de seguridad del volumen /data.</p>' +
+        '<button class="btn danger" style="max-width:420px" data-wipe="' + u.id + '">Borrar</button></div>';
       box.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }).catch(function (e) { box.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; });
   }
+  $('alta').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    api('POST', '/api/admin/users', { name: $('alta-nombre').value, email: $('alta-mail').value, planId: Number($('alta-plan').value) })
+      .then(function (r) { ev.target.reset(); toast('Alta hecha. Correo enviado a ' + r.email + '.'); return load(); })
+      .catch(function (e) { toast(e.message); });
+  });
   function load() {
     return Promise.all([api('GET', '/api/admin/overview'), api('GET', '/api/admin/smtp')]).then(function (r) {
       D = r[0]; $('panel').hidden = false; render(); renderSmtp(r[1]);
+      var sel = $('alta-plan'), prev = sel.value;
+      sel.innerHTML = D.plans.map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + '</option>'; }).join('');
+      if (prev) sel.value = prev;
     });
   }
   $('smtp').addEventListener('submit', function (ev) {
@@ -141,6 +161,13 @@
     }
     if (ver) { VER = Number(ver); detalle(); }
     if (b.id === 'detalle-cerrar') { VER = null; $('detalle').hidden = true; }
+    var wp = b.getAttribute('data-wipe');
+    if (wp) {
+      b.disabled = true;
+      api('POST', '/api/admin/users/' + wp + '/wipe', { mode: $('wipe-mode').value, countFrom: $('wipe-desde').value, confirm: $('wipe-confirm').value })
+        .then(function (r) { toast(r.properties ? 'Datos borrados. Se conservan ' + r.properties + ' inmuebles y sus inquilinos.' : 'Datos borrados.'); return load(); })
+        .then(function () { detalle(); }).catch(function (e) { toast(e.message); b.disabled = false; });
+    }
     if (lim) change(api('PUT', '/api/admin/users/' + lim, { maxProps: $('detalle-limite').value }).then(function (r) { setTimeout(detalle, 300); return r; }), 'Límite guardado.');
     if (rs) api('POST', '/api/admin/users/' + rs + '/reset', {}).then(function (r) {
       $('reset-nombre').textContent = r.name; $('reset-codigo').textContent = r.code; $('reset-box').hidden = false;

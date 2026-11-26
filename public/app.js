@@ -28,8 +28,8 @@
   var params = new URLSearchParams(location.search);
   var S = {
     data: null, tab: 'inicio', screen: null, cartera: null, periodo: 'mes', forma: 'banco', cobroFecha: 'hoy',
-    auth: params.has('olvido') ? 'olvido' : (params.has('registro') || params.has('invitacion') ? 'registro' : 'login'), support: '',
-    invite: (params.get('invitacion') || '').toUpperCase(), err: '', confirm: null, busy: false,
+    auth: params.has('olvido') ? 'olvido' : (params.has('registro') ? 'registro' : 'login'), support: '',
+    invToken: params.get('invitacion') || '', invInfo: null, crear: null, err: '', confirm: null, busy: false,
     activar: params.get('activar') || '', pendiente: '', inactivo: '',
     doc: null, pages: [], facProp: 0
   };
@@ -206,12 +206,37 @@
       '<button class="btn" data-act="reenviar" data-v="' + esc(S.pendiente) + '">Enviarme el correo otra vez</button>' +
       '<button class="btn plain" data-act="auth" data-v="login">Ya la he activado: entrar</button>';
   }
+  /* Enlace de invitación: crear la contraseña (cuenta nueva) o entrar con la clave (si ya tiene cuenta). */
+  function vInvitacion() {
+    var i = S.invInfo;
+    return '<header class="stack"><h1>Invitación</h1><p><b>' + esc(i.ownerName) + '</b> le ha dado acceso a sus alquileres.</p></header>' +
+      (S.err ? '<p class="err" role="alert">' + esc(S.err) + '</p>' : '') +
+      '<form id="form-invitacion" class="stack-lg">' +
+      (i.hasAccount
+        ? '<p class="msg">Ya tiene una cuenta con <b>' + esc(i.email) + '</b>. Escriba su clave para aceptar.</p>' +
+          '<label class="f">Su clave<input type="password" id="invi-pin" autocomplete="current-password" required></label>' +
+          '<button class="btn primary" type="submit">Aceptar y entrar</button>'
+        : '<label class="f">Su nombre<input type="text" id="invi-nombre" autocomplete="name" required value="' + esc(i.name) + '"></label>' +
+          '<label class="f">Su correo<input type="email" value="' + esc(i.email) + '" disabled></label>' +
+          '<label class="f">Su móvil (si quiere)<small>Para poder entrar también con el móvil.</small><input type="tel" id="invi-tel" inputmode="tel" autocomplete="tel"></label>' +
+          '<label class="f">Cree su contraseña<small>Al menos 6 números o letras. Apúntela.</small><input type="password" id="invi-pin" autocomplete="new-password" required minlength="6"></label>' +
+          '<button class="btn primary" type="submit">Crear mi cuenta y entrar</button>') +
+      '</form>';
+  }
+  function vCrear() {
+    return '<header class="stack"><h1>Cree su contraseña</h1><p class="muted">' + esc(S.crear.name) + ' · ' + esc(S.crear.email) + '</p></header>' +
+      (S.err ? '<p class="err" role="alert">' + esc(S.err) + '</p>' : '') +
+      '<form id="form-crear" class="stack-lg"><label class="f">Contraseña<small>Al menos 6 números o letras. Apúntela.</small>' +
+      '<input type="password" id="crear-pin" autocomplete="new-password" required minlength="6"></label>' +
+      '<button class="btn primary" type="submit">Guardar y entrar</button></form>';
+  }
   function vAuth() {
+    if (S.auth === 'invitacion' && S.invInfo) return vInvitacion();
+    if (S.auth === 'crear' && S.crear) return vCrear();
     if (S.auth === 'olvido') return vOlvido();
     if (S.auth === 'revisar') return vRevisar();
     var reg = S.auth === 'registro';
     return '<header class="stack"><h1>KLYP Alquileres</h1><p class="muted">Lleve la cuenta de sus alquileres desde el móvil.</p></header>' +
-      (S.invite ? '<p class="msg">Tiene una invitación. Entre o cree su cuenta para aceptarla.</p>' : '') +
       '<div class="seg"><button data-act="auth" data-v="login" aria-pressed="' + !reg + '">Entrar</button>' +
       '<button data-act="auth" data-v="registro" aria-pressed="' + reg + '">Crear cuenta</button></div>' +
       (S.err ? '<p class="err" role="alert">' + esc(S.err) + '</p>' : '') +
@@ -808,17 +833,19 @@
         '<div class="kv"><span>Personas que me ayudan</span><b class="r">' + (d.helpers.length + d.invites.length) + (pl.maxHelpers == null ? ' (sin límite)' : ' de ' + pl.maxHelpers) + '</b></div>' +
         '<p class="muted">Para cambiar de plan, póngase en contacto con KLYP.</p></section>' +
         '<section class="card"><h2>Personas que me ayudan</h2>' +
-        (d.helpers.length || d.invites.length ? '' : '<p class="muted">Puede invitar a un hijo o a su gestor y elegir qué apartados ve cada uno: por ejemplo, uno revisa los pagos y otro sube las facturas.</p>') +
+        (d.helpers.length || d.invites.length ? '' : '<p class="muted">Añada a un hijo o a su gestor y elija qué apartados ve cada uno: por ejemplo, uno revisa los pagos y otro sube las facturas. Le llegará un correo para crear su contraseña.</p>') +
         d.helpers.map(function (a) {
           return '<div class="sub"><p><b>' + esc(a.name) + '</b></p><p class="muted">' + esc(resumen(a.perms)) + '</p>' +
             '<div class="btn-row"><button class="btn mini" data-act="permisos" data-uid="' + a.userId + '">Cambiar permisos</button>' +
             '<button class="btn mini plain" data-act="quitar-ayuda" data-id="' + a.userId + '">Quitar</button></div></div>';
         }).join('') +
         d.invites.map(function (i) {
-          return '<div class="sub"><p><b>' + esc(i.name) + '</b></p><p class="muted">Invitación sin aceptar · código ' + esc(i.code) + '<br>' + esc(resumen(i.perms)) + '</p>' +
-            '<button class="btn mini plain" data-act="quitar-invitacion" data-code="' + esc(i.code) + '">Anular</button></div>';
+          return '<div class="sub"><p><b>' + esc(i.name) + '</b> <span class="pill ' + (i.expired ? 'bad">Invitación caducada' : 'warn">Invitación enviada') + '</span></p>' +
+            '<p class="muted">' + (i.email ? esc(i.email) + '<br>' : '') + esc(resumen(i.perms)) + '</p>' +
+            '<div class="btn-row">' + (i.email ? '<button class="btn mini" data-act="reenviar-invitacion" data-code="' + esc(i.code) + '">Reenviar correo</button>' : '<span></span>') +
+            '<button class="btn mini plain" data-act="quitar-invitacion" data-code="' + esc(i.code) + '">Anular</button></div></div>';
         }).join('') +
-        '<button class="btn" data-act="ir" data-screen="invitar">+ Invitar a un familiar o gestor</button></section>';
+        '<button class="btn" data-act="ir" data-screen="invitar">+ Añadir una persona</button></section>';
     } else {
       h += '<section class="card"><h2>Está ayudando a ' + esc(d.cartera.ownerName) + '</h2><p>' + esc(resumen(d.cartera.perms)) + '.</p></section>';
     }
@@ -826,10 +853,7 @@
       '<div class="seg seg4">' + ESCALAS.map(function (x, i) {
         return '<button data-act="fs-set" data-v="' + x + '" aria-pressed="' + (S.fs === x) + '" style="font-size:' + (0.8 + i * 0.12) + 'rem">' + NOMBRES_TAM[i] + '</button>';
       }).join('') + '</div></section>';
-    h += '<section class="card"><h2>Tengo un código de invitación</h2><form id="form-codigo" class="stack">' +
-      '<label class="f">Código<input type="text" id="codigo" maxlength="12" autocapitalize="characters" autocomplete="off" required></label>' +
-      '<button class="btn" type="submit">Aceptar invitación</button></form></section>' +
-      '<section class="card"><h2>Cambiar mi clave</h2><form id="form-clave" class="stack">' +
+    h += '<section class="card"><h2>Cambiar mi clave</h2><form id="form-clave" class="stack">' +
       '<label class="f">Clave actual<input type="password" id="clave-actual" autocomplete="current-password" required></label>' +
       '<label class="f">Clave nueva<small>Al menos 6 números o letras.</small><input type="password" id="clave-nueva" autocomplete="new-password" required minlength="6"></label>' +
       '<button class="btn" type="submit">Cambiar la clave</button></form></section>' +
@@ -843,28 +867,19 @@
   function vInvitar(s) {
     var a = s.uid ? S.data.helpers.filter(function (x) { return x.userId === s.uid; })[0] : null;
     if (s.uid && !a) return vCuenta();
-    return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>' + (a ? 'Permisos de ' + esc(a.name) : 'Invitar a alguien') + '</h1>' +
-      '<p class="muted">' + (a ? 'Elija qué ve y qué puede anotar en cada apartado.' : 'Elija qué puede hacer. Le daremos un código para que se lo envíe a esa persona.') + '</p></header>' +
+    return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>' + (a ? 'Permisos de ' + esc(a.name) : 'Añadir una persona') + '</h1>' +
+      '<p class="muted">' + (a ? 'Elija qué ve y qué puede anotar en cada apartado.' : 'Le enviaremos un correo con un enlace para crear su contraseña. Si ya tiene cuenta, solo tendrá que entrar.') + '</p></header>' +
       '<form id="form-invitar" class="stack-lg">' +
-      (a ? '' : '<label class="f">Nombre<input type="text" id="inv-nombre" maxlength="60" required></label>') +
+      (a ? '' : '<label class="f">Nombre<input type="text" id="inv-nombre" maxlength="60" required></label>' +
+        '<label class="f">Correo<input type="email" id="inv-mail" inputmode="email" autocapitalize="none" maxlength="120" required></label>') +
       MODS.map(function (m) {
         var v = a ? a.perms[m.id] : 2;
         return '<label class="f">' + m.label + '<select id="inv-' + m.id + '">' + [2, 1, 0].map(function (n) {
           return '<option value="' + n + '"' + (n === v ? ' selected' : '') + '>' + NIVEL[n] + '</option>';
         }).join('') + '</select></label>';
       }).join('') +
-      '<button class="btn primary" type="submit">' + (a ? 'Guardar permisos' : 'Crear invitación') + '</button></form>';
+      '<button class="btn primary" type="submit">' + (a ? 'Guardar permisos' : 'Enviar invitación') + '</button></form>';
   }
-  function vInvitado(s) {
-    var link = base() + '/app?invitacion=' + s.code;
-    var txt = 'Hola ' + s.nombre + ', le invito a ver mis alquileres en KLYP Alquileres. Entre aquí: ' + link + ' (código ' + s.code + ')';
-    return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Invitación creada</h1>' +
-      '<p>Envíe este código a ' + esc(s.nombre) + ':</p></header><p class="code">' + esc(s.code) + '</p>' +
-      '<a class="btn primary" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent(txt) + '">Enviar por WhatsApp</a>' +
-      '<button class="btn" data-act="copiar" data-txt="' + esc(txt) + '">Copiar el mensaje</button>' +
-      '<p class="msg">' + esc(txt) + '</p>';
-  }
-
   /* ---------- pintar ---------- */
   function render(top) {
     var h, s = S.screen;
@@ -885,7 +900,6 @@
       else if (s && s.name === 'acuerdo') h = vAcuerdo(s);
       else if (s && s.name === 'importe') h = vImporte(s);
       else if (s && s.name === 'invitar') h = vInvitar(s);
-      else if (s && s.name === 'invitado') h = vInvitado(s);
       else h = { inicio: vInicio, pendiente: vPendiente, facturas: vFacturas, pisos: vPisos, cuenta: vCuenta }[S.tab]();
       tabsBar.hidden = false; appEl.classList.remove('no-tabs');
       tabsEl.style.gridTemplateColumns = 'repeat(' + tabs.length + ',1fr)';
@@ -1000,6 +1014,7 @@
     }
     else if (act === 'cartera') { S.cartera = String(id); S.tab = 'inicio'; S.screen = null; load(true).catch(fail); }
     else if (act === 'quitar-ayuda') run(function () { return api('DELETE', '/api/helpers/' + id); }, 'Ya no tiene acceso a sus alquileres.');
+    else if (act === 'reenviar-invitacion') run(function () { return api('POST', '/api/invites/' + b.getAttribute('data-code') + '/resend', {}); }, 'Invitación enviada otra vez.');
     else if (act === 'quitar-invitacion') run(function () { return api('DELETE', '/api/invites/' + b.getAttribute('data-code')); }, 'Invitación anulada.');
     else if (act === 'copiar') {
       var t = b.getAttribute('data-txt');
@@ -1024,9 +1039,6 @@
     if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; }
   });
 
-  function aceptar(code) {
-    return api('POST', '/api/invites/accept', { code: code }).then(function (r) { S.cartera = String(r.ownerId); S.tab = 'inicio'; S.screen = null; });
-  }
   function pintarDoc() {
     var el = document.getElementById('doc-lista');
     if (el) el.innerHTML = vDoc();
@@ -1115,10 +1127,10 @@
       S.busy = true;
       S.inactivo = '';
       if (reg) {
-        api('POST', '/api/register', { name: v('auth-nombre'), email: v('auth-mail'), phone: ident, pin: document.getElementById('auth-pin').value, invite: S.invite })
+        api('POST', '/api/register', { name: v('auth-nombre'), email: v('auth-mail'), phone: ident, pin: document.getElementById('auth-pin').value })
           .then(function (r) {
             /* La cuenta queda pendiente: la invitación se acepta al activarla. */
-            S.err = ''; S.invite = ''; S.pendiente = r.email; S.auth = 'revisar';
+            S.err = ''; S.pendiente = r.email; S.auth = 'revisar';
             history.replaceState(null, '', '/app'); render(true);
           })
           .catch(function (e) { S.err = e.message; render(false); })
@@ -1126,14 +1138,7 @@
         return;
       }
       api('POST', '/api/login', { phone: ident, pin: document.getElementById('auth-pin').value })
-        .then(function () {
-          S.err = '';
-          if (!S.invite) return;
-          var code = S.invite; S.invite = '';
-          history.replaceState(null, '', '/app');
-          return aceptar(code).catch(function (e) { setTimeout(function () { toast(e.message); }, 300); });
-        })
-        .then(function () { return load(true); })
+        .then(function () { S.err = ''; return load(true); })
         .catch(function (e) { S.err = e.message; S.inactivo = e.code === 'inactive' ? ident : ''; render(false); })
         .then(function () { S.busy = false; });
     } else if (f === 'form-piso') {
@@ -1199,9 +1204,10 @@
         run(function () { return api('PUT', '/api/helpers/' + uid, { perms: perms }).then(function () { S.screen = null; }); }, 'Permisos guardados.')
           .then(function () { window.scrollTo(0, 0); });
       } else {
+        var enviado = null;
         run(function () {
-          return api('POST', '/api/invites', { name: nombre, perms: perms }).then(function (r) { S.screen = { name: 'invitado', code: r.code, nombre: nombre }; });
-        }).then(function () { window.scrollTo(0, 0); });
+          return api('POST', '/api/invites', { name: nombre, email: v('inv-mail'), perms: perms }).then(function (r) { enviado = r.email; S.screen = null; });
+        }).then(function () { if (enviado) { window.scrollTo(0, 0); toast('Invitación enviada a ' + enviado + '.'); } });
       }
     } else if (f === 'form-olvido') {
       if (S.busy) return;
@@ -1215,29 +1221,40 @@
       run(function () {
         return api('POST', '/api/password', { current: document.getElementById('clave-actual').value, pin: document.getElementById('clave-nueva').value });
       }, 'Clave cambiada.');
-    } else if (f === 'form-codigo') {
-      run(function () { return aceptar(v('codigo')); }, 'Invitación aceptada.').then(function () { window.scrollTo(0, 0); });
+    } else if (f === 'form-invitacion' || f === 'form-crear') {
+      if (S.busy) return;
+      S.busy = true;
+      var req = f === 'form-invitacion'
+        ? api('POST', '/api/invitation/accept', { token: S.invToken, name: v('invi-nombre'), phone: v('invi-tel'), pin: document.getElementById('invi-pin').value })
+        : api('POST', '/api/activate', { token: S.activar, pin: document.getElementById('crear-pin').value });
+      req.then(function (r) {
+        if (r && r.ownerId) S.cartera = String(r.ownerId);
+        S.err = ''; S.auth = 'login'; S.invToken = ''; S.activar = ''; S.tab = 'inicio';
+        history.replaceState(null, '', '/app');
+        return load(true).then(function () { toast(f === 'form-invitacion' ? 'Invitación aceptada. ¡Bienvenido!' : 'Contraseña guardada. ¡Bienvenido!'); });
+      }).catch(function (e) { S.err = e.message; render(false); }).then(function () { S.busy = false; });
     }
   });
 
   /* ---------- arranque ---------- */
   api('GET', '/api/info').then(function (d) { S.support = d.support || ''; if (!S.data && S.auth === 'olvido') render(false); }).catch(function () { });
   /* Enlace del correo de activación: activa la cuenta y deja la sesión abierta. */
-  var inicio = Promise.resolve();
-  if (S.activar) {
-    inicio = api('POST', '/api/activate', { token: S.activar }).then(function (r) {
-      if (r.ownerId) S.cartera = String(r.ownerId);
-      S.invite = '';
-      setTimeout(function () { toast('Cuenta activada. ¡Bienvenido a KLYP Alquileres!'); }, 300);
-    }, function (e) { S.err = e.message; S.auth = 'login'; }).then(function () { history.replaceState(null, '', '/app'); });
+  /* Si el enlace pide crear la contraseña o aceptar una invitación, se muestra esa pantalla y no se carga la app. */
+  var inicio = Promise.resolve(true), parar = function (e) { S.err = e.message; S.auth = 'login'; S.invToken = ''; S.activar = ''; history.replaceState(null, '', '/app'); return true; };
+  if (S.invToken) {
+    inicio = api('POST', '/api/invitation/info', { token: S.invToken }).then(function (i) { S.invInfo = i; S.auth = 'invitacion'; render(true); return false; }, parar);
+  } else if (S.activar) {
+    inicio = api('POST', '/api/activate', { token: S.activar, check: true }).then(function (r) {
+      if (r.needPin) { S.crear = r; S.auth = 'crear'; render(true); return false; }
+      return api('POST', '/api/activate', { token: S.activar }).then(function (a) {
+        if (a.ownerId) S.cartera = String(a.ownerId);
+        S.activar = ''; history.replaceState(null, '', '/app');
+        setTimeout(function () { toast('Cuenta activada. ¡Bienvenido a KLYP Alquileres!'); }, 300);
+        return true;
+      });
+    }).catch(parar);
   }
-  inicio.then(function () { return load(true); }).then(function () {
-    if (S.invite) {
-      var code = S.invite; S.invite = '';
-      history.replaceState(null, '', '/app');
-      run(function () { return aceptar(code); }, 'Invitación aceptada.');
-    }
-  }).catch(function (e) {
+  inicio.then(function (seguir) { if (seguir) return load(true); }).catch(function (e) {
     if (e.status === 401) { render(true); return; }
     view.innerHTML = '<header><h1>KLYP Alquileres</h1></header><p class="err">' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Probar otra vez</button>';
   });

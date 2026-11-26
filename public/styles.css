@@ -158,6 +158,7 @@ td.num{font-variant-numeric:tabular-nums}
 table select,table input{min-height:2.4rem;padding:.3rem .6rem;font-size:.9rem;min-width:90px}
 table .btn{display:inline-flex;vertical-align:middle;min-height:2.3rem;font-size:.85rem;width:auto;padding:.2rem .8rem}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}
+.peligro{border-color:var(--bad);max-width:640px}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.7rem}
 @media (max-width:760px){ .hero{grid-template-columns:1fr} }
 @media (prefers-reduced-motion: no-preference){ .btn,.row,.tab{transition:background-color .15s} }

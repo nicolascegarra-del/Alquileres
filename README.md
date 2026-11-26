@@ -53,6 +53,19 @@ En `/admin`, la tabla de usuarios muestra de cada uno: alta, último acceso, inm
 - **Límite de inmuebles:** cada plan tiene su máximo (se cambia en «Planes y límites»). Además, a un usuario concreto se le puede poner un límite propio desde «Ver», que manda sobre el del plan. Bajar el límite no borra inmuebles: solo impide añadir más.
 - **Facturas de suministros:** «Desactivar» quita a ese usuario la pestaña Facturas y la casilla «Necesito facturas de suministros». Sus facturas no se borran y vuelven a verse si se activa otra vez.
 
+## Añadir personas y dar de alta propietarios
+
+- **El propietario**, en Cuenta → **Añadir una persona**: nombre, correo y qué puede ver o anotar en cada apartado. Le llega un correo con un enlace (vale 7 días) para **crear su contraseña** y entrar; si ya tenía cuenta con ese correo, solo tiene que entrar con su clave para aceptar. No hay códigos. Desde la lista se puede reenviar o anular la invitación y cambiar los permisos.
+- **El superadmin**, en `/admin` → **Dar de alta un propietario**: nombre, correo y plan. Le llega un correo para crear su contraseña. Hasta entonces aparece como «Sin contraseña todavía», con el botón «Reenviar correo».
+
+## Borrar datos de un usuario (superadmin)
+
+En `/admin`, botón **Ver** del usuario → **Borrar datos**:
+- **Empezar de cero:** borra cobros, acuerdos de pago, facturas de suministros (con sus PDF) e importes corregidos. **Se conservan los inmuebles y los inquilinos** (con sus rentas e IPC).
+- **Borrar todo:** además borra los inmuebles y los inquilinos.
+- **Contar desde:** fecha a partir de la cual cuentan los meses (por ejemplo, 1/1/2027). Los meses anteriores no aparecen ni cuentan como deuda.
+- La cuenta, el plan y las personas que le ayudan se mantienen. Para confirmar hay que escribir el correo del usuario. **No se puede deshacer**: haga antes una copia del volumen `/data`.
+
 ## Permisos por usuario
 
 Hay tres apartados: **Pagos** (Inicio y Pendiente), **Facturas de suministros** e **Inmuebles e inquilinos**.
