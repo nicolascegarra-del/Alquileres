@@ -423,6 +423,7 @@
     if (!mo) return h + '<p class="msg">Ese mes ya no existe.</p>';
     h += '<header class="stack"><h1>Cobrar ' + mes(mo.ym) + '</h1><p class="muted">' + esc(c.tenant) + ' · ' + esc(nom(p)) + '</p></header>' +
       '<section class="card"><div class="kv"><span>Alquiler de ' + mes(mo.ym) + (mo.days ? ' (' + dias(mo.days) + ')' : '') + '</span><b class="r">' + eur(mo.rent) + '</b></div>' +
+      (mo.tax ? '<div class="kv"><span class="muted">Base ' + eur(mo.tax.base) + (mo.tax.iva ? ' + IVA ' + eur(mo.tax.iva) : '') + (mo.tax.irpf ? ' − retención ' + eur(mo.tax.irpf) : '') + '</span></div>' : '') +
       (mo.paid ? '<div class="kv"><span>Ya cobrado</span><b class="r">' + eur(mo.paid) + '</b></div>' : '') +
       '<div class="kv"><span>Falta</span><b class="r">' + eur(mo.falta) + '</b></div></section>';
     if (mo.falta <= 0) return h + '<p class="msg">Este mes ya está cobrado del todo.</p>';
@@ -439,6 +440,18 @@
       '<button class="btn primary" type="submit">Guardar el cobro</button></form>';
   }
 
+  /* Factura de alquiler de un mes: emitirla, verla y enviarla. Solo si el inquilino tiene NIF o IVA/retención. */
+  function lineaFactura(pid, mo) {
+    var c = mo.c, f = c.invoices.filter(function (x) { return x.ym === mo.ym; })[0];
+    if (f) {
+      return '<div class="kv0 cobro"><span>Factura <a target="_blank" rel="noopener" href="' + f.url + '">' + esc(f.ref) + '</a> · ' + eur(f.total) +
+        (f.emailedAt ? ' · enviada el ' + fecha(f.emailedAt) : f.emailError ? ' · <span class="red">correo no enviado</span>' : '') + '</span>' +
+        (can('pagos') && c.email && S.data.mailReady ? '<button class="btn mini plain" data-act="enviar-factura-alq" data-iid="' + f.id + '">' + (f.emailedAt ? 'Reenviar' : 'Enviar') + '</button>' : '') + '</div>';
+    }
+    if (!can('pagos') || mo.agreementId || !(c.tenantNif || c.ivaPct || c.irpfPct)) return '';
+    return '<div class="kv0 cobro"><span>Sin factura</span><button class="btn mini plain" data-act="emitir-factura" data-cid="' + c.id + '" data-ym="' + mo.ym + '">Emitir factura</button></div>';
+  }
+
   /* ---------- ficha del inmueble (gestión) ---------- */
   function vPiso(id) {
     var p = prop(id), c = p.cur, h, pagos = lv('pagos') >= 1, edit = can('inmuebles');
@@ -451,6 +464,9 @@
           '<p class="muted">' + periodo(k) + (k.rent != null ? ' · ' + eur(k.rent) + ' al mes' : '') + (k.phone ? ' · ' + esc(k.phone) : '') + '</p>' +
           (r ? '<p>Subida del IPC del ' + String(r.pct).replace('.', ',') + ' %: <b>' + eur(r.rent) + '</b> desde ' + mes(r.fromYm) + '.</p>'
             : (!fin && k.rent != null ? '<p class="muted">Sin subida de IPC programada.</p>' : '')) +
+          (k.ivaPct || k.irpfPct || k.autoInvoice ? '<p class="muted">' + [k.ivaPct ? 'IVA ' + k.ivaPct + ' %' : '', k.irpfPct ? 'retención ' + k.irpfPct + ' %' : '',
+            k.tenantNif ? 'NIF ' + esc(k.tenantNif) : '', k.autoInvoice ? 'factura automática el día ' + k.invoiceDay : ''].filter(Boolean).join(' · ') + '</p>' : '') +
+          (k.autoInvoice && esPropietario() && !(S.data.fiscal && S.data.fiscal.nif) ? '<p class="err">La factura automática no se hará hasta que rellene sus datos fiscales en Cuenta.</p>' : '') +
           '<div class="btn-row">' + (edit ? '<button class="btn mini" data-act="editar-contrato" data-id="' + id + '" data-cid="' + k.id + '">Cambiar datos</button>' +
             (fin ? '' : '<button class="btn mini" data-act="ipc" data-id="' + id + '" data-cid="' + k.id + '">Subida IPC</button>') : '') +
           '<button class="btn mini plain" data-act="contactar" data-id="' + id + '" data-cid="' + k.id + '">Contactar</button></div></div>';
@@ -463,6 +479,8 @@
           (m2.custom ? ' (corregido)' : '') + (m2.c !== c ? ' · ' + esc(m2.c.tenant) : '') +
           '<br><span class="pill ' + s.k + '">' + s.label + '</span></span>' +
           (can('pagos') && !m2.agreementId && m2.falta > 0 ? '<button class="btn mini" data-act="cobrar" data-id="' + id + '" data-cid="' + m2.c.id + '" data-ym="' + m2.ym + '">Cobrar</button>' : '') + '</div>' +
+          (m2.tax ? '<div class="kv0 cobro"><span>Base ' + eur(m2.tax.base) + (m2.tax.iva ? ' + IVA ' + eur(m2.tax.iva) : '') + (m2.tax.irpf ? ' − retención ' + eur(m2.tax.irpf) : '') + '</span></div>' : '') +
+          lineaFactura(id, m2) +
           m2.receipts.map(function (x) {
             return '<div class="kv0 cobro"><span>Cobró ' + eur(x.amount) + ' el ' + fecha(x.paidOn) + (x.method ? ' · ' + x.method : '') + '</span>' +
               (can('pagos') && !m2.agreementId ? '<button class="btn mini plain" data-act="quitar-cobro" data-rid="' + x.id + '">Quitar</button>' : '') + '</div>';
@@ -538,6 +556,19 @@
       '<label class="f">Renta al mes (€)<input type="number" id="con-renta" inputmode="decimal" min="1" step="0.01" required' + val('rent') + '></label>' +
       '<label class="f">Fecha en que empieza el contrato<input type="date" id="con-inicio" required value="' + (c ? c.startDate : S.data.today) + '"></label>' +
       '<label class="f">Fecha en que termina<small>Déjela vacía si todavía no se sabe.</small><input type="date" id="con-fin"' + val('endDate') + '></label>' +
+      '<details class="card"' + (c && (c.ivaPct || c.irpfPct || c.autoInvoice) ? ' open' : '') + '><summary><b>Impuestos y factura</b> (locales, oficinas…)</summary><div class="stack-lg" style="margin-top:.8rem">' +
+      '<p class="muted">La vivienda no lleva IVA ni retención. Los locales y oficinas suelen llevar IVA del 21 % y, si el inquilino es empresa o autónomo, retención de IRPF del 19 %. Consulte con su asesor.</p>' +
+      '<div class="grid2"><label class="f">IVA<select id="con-iva">' + [0, 21, 10].map(function (x) {
+        return '<option value="' + x + '"' + ((c ? c.ivaPct : 0) === x ? ' selected' : '') + '>' + (x ? x + ' %' : 'Sin IVA') + '</option>'; }).join('') + '</select></label>' +
+      '<label class="f">Retención de IRPF<select id="con-irpf">' + [0, 19].map(function (x) {
+        return '<option value="' + x + '"' + ((c ? c.irpfPct : 0) === x ? ' selected' : '') + '>' + (x ? x + ' %' : 'Sin retención') + '</option>'; }).join('') + '</select></label></div>' +
+      '<p class="msg" id="con-total"></p>' +
+      '<label class="f">NIF del inquilino<small>Necesario para hacerle facturas.</small><input type="text" id="con-nif" maxlength="20" autocapitalize="characters"' + val('tenantNif') + '></label>' +
+      '<label class="f">Dirección fiscal del inquilino<small>Si es distinta de la del inmueble.</small><input type="text" id="con-dirf" maxlength="160"' + val('tenantAddress') + '></label>' +
+      '<label class="check"><input type="checkbox" id="con-auto"' + (c && c.autoInvoice ? ' checked' : '') + '><span><b>Hacer y enviar la factura automáticamente cada mes</b>' +
+      '<small>El día que elija, la app emite la factura del mes y se la envía por correo al inquilino.</small></span></label>' +
+      '<label class="f">Día del mes en que se hace la factura<input type="number" id="con-dia-fac" min="1" max="28" value="' + (c ? c.invoiceDay : 1) + '"></label>' +
+      '</div></details>' +
       (nuevo ? '<label class="f">Subida del IPC para el próximo año (%)<small>Si ya la sabe. Por ejemplo 2,8. Puede dejarlo vacío y ponerla más adelante.</small>' +
         '<input type="text" id="con-ipc" inputmode="decimal" maxlength="6"></label>' +
         '<label class="f">¿Desde qué fecha se aplica la subida?<small>La renta sube sola desde la mensualidad de ese mes.</small><input type="date" id="con-ipc-fecha"></label>' : '');
@@ -904,6 +935,15 @@
       '<div class="seg seg4">' + ESCALAS.map(function (x, i) {
         return '<button data-act="fs-set" data-v="' + x + '" aria-pressed="' + (S.fs === x) + '" style="font-size:' + (0.8 + i * 0.12) + 'rem">' + NOMBRES_TAM[i] + '</button>';
       }).join('') + '</div></section>';
+    if (esPropietario() && d.fiscal) {
+      h += '<section class="card"><h2>Datos para las facturas</h2><p class="muted">Aparecen como emisor en las facturas de alquiler. Las facturas se numeran por año: ' + d.today.slice(0, 4) + '-' + esc(d.fiscal.series) + '-0001, 0002…</p>' +
+        '<form id="form-fiscal" class="stack">' +
+        '<label class="f">Nombre o razón social<input type="text" id="fis-nombre" maxlength="100" value="' + esc(d.fiscal.name) + '"></label>' +
+        '<label class="f">NIF<input type="text" id="fis-nif" maxlength="20" autocapitalize="characters" value="' + esc(d.fiscal.nif) + '"></label>' +
+        '<label class="f">Dirección fiscal<input type="text" id="fis-dir" maxlength="160" value="' + esc(d.fiscal.address) + '"></label>' +
+        '<label class="f">Serie de las facturas<small>Una letra o código corto. Normalmente «A».</small><input type="text" id="fis-serie" maxlength="6" autocapitalize="characters" value="' + esc(d.fiscal.series) + '"></label>' +
+        '<button class="btn" type="submit">Guardar datos fiscales</button></form></section>';
+    }
     h += '<section class="card"><h2>Cambiar mi clave</h2><form id="form-clave" class="stack">' +
       '<label class="f">Clave actual<input type="password" id="clave-actual" autocomplete="current-password" required></label>' +
       '<label class="f">Clave nueva<small>Al menos 6 números o letras.</small><input type="password" id="clave-nueva" autocomplete="new-password" required minlength="6"></label>' +
@@ -960,6 +1000,7 @@
       }).join('');
     }
     view.innerHTML = h;
+    totalContrato();
     appEl.classList.toggle('ancho', !!(s && s.name === 'nueva-factura' && S.fac && S.fac.paso === 'datos'));
     if (s && s.name === 'nueva-factura' && S.fac && S.fac.paso === 'datos') mostrarVisor();
     if (top) window.scrollTo(0, 0);
@@ -1005,6 +1046,17 @@
     }
     else if (act === 'quitar-cobro') {
       run(function () { return api('DELETE', '/api/receipts/' + b.getAttribute('data-rid')); }, 'Cobro quitado.');
+    }
+    else if (act === 'emitir-factura') {
+      run(function () { return api('POST', '/api/contracts/' + cid + '/invoices', { ym: ym }); }, 'Factura emitida.');
+    }
+    else if (act === 'enviar-factura-alq') {
+      if (S.busy) return;
+      S.busy = true; b.disabled = true; b.textContent = 'Enviando…';
+      api('POST', '/api/rent-invoices/' + b.getAttribute('data-iid') + '/email', {})
+        .then(function (r) { return load(false).then(function () { toast('Factura enviada a ' + r.to + '.'); }); })
+        .catch(function (e) { return load(false).catch(function () { }).then(function () { toast(e.message); }); })
+        .then(function () { S.busy = false; });
     }
     else if (act === 'fs') tamano(Number(b.getAttribute('data-v')), true);
     else if (act === 'fs-set') fijarTam(Number(b.getAttribute('data-v')), true);
@@ -1110,10 +1162,20 @@
     }
   });
 
-  document.addEventListener('input', function (ev) { if (/^ac-/.test(ev.target.id)) previa(); });
+  /* Lo que paga el inquilino con IVA y retención, mientras se escribe. */
+  function totalContrato() {
+    var el = document.getElementById('con-total'); if (!el) return;
+    var base = cent(Number(document.getElementById('con-renta').value || 0)), iva = Number(document.getElementById('con-iva').value), irpf = Number(document.getElementById('con-irpf').value);
+    var vi = Math.round(base * iva / 100), vr = Math.round(base * irpf / 100);
+    el.hidden = !(iva || irpf) || !base;
+    el.innerHTML = 'Cada mes: base ' + eur(base / 100) + (iva ? ' + IVA ' + eur(vi / 100) : '') + (irpf ? ' − retención ' + eur(vr / 100) : '') +
+      ' = <b>el inquilino paga ' + eur((base + vi - vr) / 100) + '</b>' + (irpf ? ' (la retención la ingresa él en Hacienda)' : '') + '.';
+  }
+  document.addEventListener('input', function (ev) { if (/^ac-/.test(ev.target.id)) previa(); if (/^con-(renta|iva|irpf)$/.test(ev.target.id)) totalContrato(); });
   document.addEventListener('change', function (ev) {
     var t = ev.target;
     if (/^ac-/.test(t.id)) { previa(); return; }
+    if (/^con-(iva|irpf)$/.test(t.id)) { totalContrato(); return; }
     if (t.id === 'fac-filtro') { S.facProp = Number(t.value); render(false); return; }
     if ((t.id === 'fac-foto' || t.id === 'fac-archivo') && t.files && t.files.length) { S.fac.leer = true; añadirDoc([].slice.call(t.files)); t.value = ''; return; }
     if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; }
@@ -1199,7 +1261,8 @@
     ev.preventDefault();
     var f = ev.target.id, v = function (i) { var el = document.getElementById(i); return el ? el.value.trim() : ''; };
     function datosContrato() {
-      return { tenant: v('con-inq'), phone: v('con-tel'), email: v('con-mail'), rent: v('con-renta'), startDate: v('con-inicio'), endDate: v('con-fin'), ipcPct: v('con-ipc'), ipcDate: v('con-ipc-fecha') };
+      return { tenant: v('con-inq'), phone: v('con-tel'), email: v('con-mail'), rent: v('con-renta'), startDate: v('con-inicio'), endDate: v('con-fin'), ipcPct: v('con-ipc'), ipcDate: v('con-ipc-fecha'),
+        ivaPct: v('con-iva'), irpfPct: v('con-irpf'), tenantNif: v('con-nif'), tenantAddress: v('con-dirf'), autoInvoice: !!(document.getElementById('con-auto') || {}).checked, invoiceDay: v('con-dia-fac') };
     }
     if (f === 'form-auth') {
       var reg = S.auth === 'registro', ident = v('auth-tel');
@@ -1301,6 +1364,8 @@
         .then(function () { toast('Clave cambiada. Ya ha entrado.'); })
         .catch(function (e) { S.err = e.message; render(false); })
         .then(function () { S.busy = false; });
+    } else if (f === 'form-fiscal') {
+      run(function () { return api('PUT', '/api/me/fiscal', { name: v('fis-nombre'), nif: v('fis-nif'), address: v('fis-dir'), series: v('fis-serie') }); }, 'Datos fiscales guardados.');
     } else if (f === 'form-clave') {
       run(function () {
         return api('POST', '/api/password', { current: document.getElementById('clave-actual').value, pin: document.getElementById('clave-nueva').value });

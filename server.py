@@ -104,7 +104,31 @@ def month_info(c, rr, ym, due_day, override=None):
     amount = base if days >= dim else round(base * days / dim)
     # Si entra a mitad de mes, ese mes paga el día que entra; si sale antes del día de cobro, el día que sale.
     due = min(max(due_day, a.day), b.day)
-    return (amount if override is None else override), (None if days >= dim else days), due
+    # Lo que se cobra es la base más el IVA menos la retención de IRPF (si el contrato los tiene).
+    total = tax_split(amount if override is None else override, c)[3]
+    return total, (None if days >= dim else days), due
+
+
+def tax_split(base, c):
+    """(base, IVA, retención, total) en céntimos para un contrato con IVA y/o retención de IRPF."""
+    keys = c.keys() if hasattr(c, "keys") else c
+    iva_pct = (c["iva_pct"] or 0) if "iva_pct" in keys else 0
+    irpf_pct = (c["irpf_pct"] or 0) if "irpf_pct" in keys else 0
+    iva, irpf = round(base * iva_pct / 100), round(base * irpf_pct / 100)
+    return base, iva, irpf, base + iva - irpf
+
+
+def base_of(c, rr, ym, override=None):
+    """Base (renta del mes, repartida por días si hace falta) sin impuestos."""
+    y, m = ym // 12, ym % 12 + 1
+    dim = calendar.monthrange(y, m)[1]
+    a = max(date(y, m, 1), date.fromisoformat(c["start_date"]))
+    b = min(date(y, m, dim), date.fromisoformat(c["end_date"])) if c["end_date"] else date(y, m, dim)
+    days = (b - a).days + 1
+    if override is not None:
+        return override
+    base = rent_at(rr, ym)
+    return base if days >= dim else round(base * days / dim)
 
 
 class ApiError(Exception):
@@ -207,6 +231,12 @@ def init_db():
       amount INTEGER NOT NULL, bill_date TEXT NOT NULL, file TEXT NOT NULL, created_at TEXT NOT NULL,
       sent_at TEXT, paid_on TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS rent_invoices(
+      id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(id), contract_id INTEGER NOT NULL REFERENCES contracts(id),
+      ym INTEGER NOT NULL, series TEXT NOT NULL, year INTEGER NOT NULL, number INTEGER NOT NULL, issue_date TEXT NOT NULL,
+      base INTEGER NOT NULL, iva_pct REAL NOT NULL, iva INTEGER NOT NULL, irpf_pct REAL NOT NULL, irpf INTEGER NOT NULL,
+      total INTEGER NOT NULL, file TEXT NOT NULL, created_at TEXT NOT NULL, emailed_at TEXT, email_error TEXT,
+      UNIQUE(contract_id, ym), UNIQUE(owner_id, series, year, number));
     CREATE TABLE IF NOT EXISTS rent_receipts(
       id INTEGER PRIMARY KEY, contract_id INTEGER NOT NULL REFERENCES contracts(id), ym INTEGER NOT NULL,
       paid_on TEXT NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
@@ -237,7 +267,12 @@ def init_db():
                             ("users", "activated_at", "TEXT"), ("users", "font_scale", "REAL"),
                             ("users", "must_set_pin", "INTEGER NOT NULL DEFAULT 0"), ("users", "count_from", "TEXT"),
                             ("invites", "email", "TEXT NOT NULL DEFAULT ''"), ("invites", "token_hash", "TEXT"),
-                            ("invites", "expires_at", "INTEGER")):
+                            ("invites", "expires_at", "INTEGER"),
+                            ("contracts", "iva_pct", "REAL NOT NULL DEFAULT 0"), ("contracts", "irpf_pct", "REAL NOT NULL DEFAULT 0"),
+                            ("contracts", "tenant_nif", "TEXT NOT NULL DEFAULT ''"), ("contracts", "tenant_address", "TEXT NOT NULL DEFAULT ''"),
+                            ("contracts", "auto_invoice", "INTEGER NOT NULL DEFAULT 0"), ("contracts", "invoice_day", "INTEGER NOT NULL DEFAULT 1"),
+                            ("users", "fiscal_name", "TEXT NOT NULL DEFAULT ''"), ("users", "fiscal_nif", "TEXT NOT NULL DEFAULT ''"),
+                            ("users", "fiscal_address", "TEXT NOT NULL DEFAULT ''"), ("users", "invoice_series", "TEXT NOT NULL DEFAULT 'A'")):
         if col not in [c["name"] for c in con.execute(f"PRAGMA table_info({table})")]:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             if (table, col) == ("users", "activated_at"):
@@ -443,6 +478,155 @@ class PdfDoc:
         out += b"".join(b"%010d 00000 n \n" % o for o in offs)
         out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
         return bytes(out)
+
+
+# ---------- facturas de alquiler ----------
+def eur_txt(cents):
+    return f"{cents / 100:,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".") + " €"
+
+
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def invoice_ref(inv):
+    return f"{inv['year']}-{inv['series']}-{inv['number']:04d}"
+
+
+def invoice_pdf(inv, owner, c, prop, days):
+    """PDF de la factura de alquiler."""
+    d = PdfDoc()
+    d.text(60, 780, "FACTURA", 22, True)
+    d.text(535, 786, "Nº " + invoice_ref(inv), 11, True, right=True)
+    fecha = date.fromisoformat(inv["issue_date"])
+    d.text(535, 770, f"Fecha: {fecha.day:02d}/{fecha.month:02d}/{fecha.year}", 10, False, right=True)
+    d.line(60, 755, 535, 755, 1)
+    d.text(60, 735, "EMISOR (ARRENDADOR)", 9, True)
+    d.text(300, 735, "DESTINATARIO (ARRENDATARIO)", 9, True)
+    izq = [owner["fiscal_name"], "NIF: " + owner["fiscal_nif"]] + [x for x in [owner["fiscal_address"]] if x]
+    der = [c["tenant"], "NIF: " + (c["tenant_nif"] or "—"), c["tenant_address"] or prop["address"]]
+    for i, t in enumerate(izq):
+        d.text(60, 718 - i * 15, t[:48], 10)
+    for i, t in enumerate(der):
+        d.text(300, 718 - i * 15, t[:48], 10)
+    y = 640
+    d.text(60, y, "CONCEPTO", 9, True)
+    d.text(535, y, "IMPORTE", 9, True, right=True)
+    d.line(60, y - 6, 535, y - 6)
+    periodo = f"{MESES[inv['ym'] % 12]} de {inv['ym'] // 12}" + (f" ({days} días)" if days else "")
+    d.text(60, y - 24, f"Alquiler de {prop['address']}"[:70], 10)
+    d.text(60, y - 38, f"Mensualidad de {periodo}", 10)
+    d.text(535, y - 24, eur_txt(inv["base"]), 10, False, right=True)
+    y -= 80
+    filas = [("Base imponible", eur_txt(inv["base"]), False)]
+    if inv["iva"]:
+        filas.append((f"IVA {inv['iva_pct']:g} %", eur_txt(inv["iva"]), False))
+    if inv["irpf"]:
+        filas.append((f"Retención IRPF {inv['irpf_pct']:g} %", "-" + eur_txt(inv["irpf"]), False))
+    filas.append(("TOTAL A PAGAR", eur_txt(inv["total"]), True))
+    d.line(320, y + 14, 535, y + 14)
+    for i, (k, v, bold) in enumerate(filas):
+        d.text(330, y - i * 18, k, 11 if bold else 10, bold)
+        d.text(535, y - i * 18, v, 11 if bold else 10, bold, right=True)
+    if not inv["iva"]:
+        d.text(60, 120, "Operación exenta de IVA: arrendamiento de vivienda (art. 20.Uno.23º de la Ley 37/1992 del IVA).", 8)
+    return d.bytes()
+
+
+def issue_invoice(con, c, ym, today=None):
+    """Emite (o devuelve, si ya existe) la factura de un mes de un contrato. Numeración correlativa por propietario, serie y año."""
+    old = con.execute("SELECT * FROM rent_invoices WHERE contract_id=? AND ym=?", (c["id"], ym)).fetchone()
+    if old:
+        return old
+    prop = con.execute("SELECT * FROM properties WHERE id=?", (c["property_id"],)).fetchone()
+    owner = con.execute("SELECT * FROM users WHERE id=?", (prop["owner_id"],)).fetchone()
+    if not owner["fiscal_name"] or not owner["fiscal_nif"]:
+        raise ApiError(400, "Para emitir facturas, rellene antes sus datos fiscales en Cuenta → «Datos para las facturas».")
+    if not c["tenant_nif"]:
+        raise ApiError(400, f"Falta el NIF de {c['tenant']}: añádalo en los datos del inquilino.")
+    today = today or date.today()
+    rr = con.execute("SELECT * FROM rents WHERE contract_id=? ORDER BY from_ym", (c["id"],)).fetchall()
+    o = con.execute("SELECT amount FROM month_amounts WHERE contract_id=? AND ym=?", (c["id"], ym)).fetchone()
+    base, iva, irpf, total = tax_split(base_of(c, rr, ym, o["amount"] if o else None), c)
+    days = month_info(c, rr, ym, prop["due_day"])[1]
+    series = owner["invoice_series"] or "A"
+    number = con.execute("SELECT COALESCE(MAX(number), 0) + 1 FROM rent_invoices WHERE owner_id=? AND series=? AND year=?",
+                         (owner["id"], series, today.year)).fetchone()[0]
+    inv = {"ym": ym, "series": series, "year": today.year, "number": number, "issue_date": today.isoformat(),
+           "base": base, "iva_pct": c["iva_pct"] or 0, "iva": iva, "irpf_pct": c["irpf_pct"] or 0, "irpf": irpf, "total": total}
+    name = secrets.token_hex(16) + ".pdf"
+    with open(os.path.join(UPLOADS, name), "wb") as f:
+        f.write(invoice_pdf(inv, owner, c, prop, days))
+    iid = con.execute(
+        "INSERT INTO rent_invoices(owner_id, contract_id, ym, series, year, number, issue_date, base, iva_pct, iva, irpf_pct, irpf, total, file, created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (owner["id"], c["id"], ym, series, today.year, number, inv["issue_date"], base, inv["iva_pct"], iva, inv["irpf_pct"], irpf, total,
+         name, today.isoformat())).lastrowid
+    return con.execute("SELECT * FROM rent_invoices WHERE id=?", (iid,)).fetchone()
+
+
+def email_invoice(con, inv):
+    """Envía la factura de alquiler al correo del inquilino. Anota el resultado en la factura."""
+    c = con.execute("SELECT * FROM contracts WHERE id=?", (inv["contract_id"],)).fetchone()
+    prop = con.execute("SELECT * FROM properties WHERE id=?", (c["property_id"],)).fetchone()
+    owner = con.execute("SELECT * FROM users WHERE id=?", (inv["owner_id"],)).fetchone()
+    try:
+        cfg = smtp_config(con)
+        if not smtp_ready(cfg):
+            raise ApiError(400, "El envío de correos no está configurado.")
+        if not c["email"]:
+            raise ApiError(400, f"No tiene apuntado el correo de {c['tenant']}.")
+        with open(os.path.join(UPLOADS, inv["file"]), "rb") as f:
+            pdf = f.read()
+        mes = f"{MESES[inv['ym'] % 12]} de {inv['ym'] // 12}"
+        send_mail(cfg, c["email"], f"Factura {invoice_ref(inv)} · alquiler de {mes} · {prop['address']}",
+                  f"Hola {c['tenant'].split()[0]},\n\nLe envío la factura {invoice_ref(inv)} del alquiler de {prop['address']} "
+                  f"correspondiente a {mes}, por un total de {eur_txt(inv['total'])}. La tiene adjunta en PDF.\n\n"
+                  f"Un saludo,\n{owner['fiscal_name'] or owner['name']}", pdf, f"factura-{invoice_ref(inv)}.pdf")
+    except ApiError as e:
+        con.execute("UPDATE rent_invoices SET email_error=? WHERE id=?", (e.msg, inv["id"]))
+        raise
+    con.execute("UPDATE rent_invoices SET emailed_at=?, email_error=NULL WHERE id=?", (date.today().isoformat(), inv["id"]))
+    return c["email"]
+
+
+def auto_invoices(today=None):
+    """Tarea automática: emite y envía las facturas de los contratos con facturación automática cuyo día ya ha llegado este mes."""
+    today = today or date.today()
+    ym = today.year * 12 + today.month - 1
+    con = db()
+    done = 0
+    try:
+        rows = con.execute(
+            "SELECT c.* FROM contracts c JOIN properties p ON p.id=c.property_id JOIN users u ON u.id=p.owner_id "
+            "WHERE c.auto_invoice=1 AND p.archived=0 AND u.blocked=0 AND c.invoice_day<=? AND c.start_date<=? "
+            "AND (c.end_date IS NULL OR c.end_date>=?) AND u.fiscal_name<>'' AND u.fiscal_nif<>'' AND c.tenant_nif<>'' "
+            "AND NOT EXISTS (SELECT 1 FROM rent_invoices i WHERE i.contract_id=c.id AND i.ym=?)",
+            (today.day, today.isoformat(), f"{today.year:04d}-{today.month:02d}-01", ym)).fetchall()
+        for c in rows:
+            try:
+                inv = issue_invoice(con, c, ym, today)
+                con.commit()
+                try:
+                    email_invoice(con, inv)
+                except ApiError:
+                    pass  # el error queda anotado en la factura
+                con.commit()
+                done += 1
+            except Exception:
+                con.rollback()
+                traceback.print_exc()
+    finally:
+        con.close()
+    return done
+
+
+def scheduler():
+    while True:
+        try:
+            auto_invoices()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(3600)
 
 
 # ---------- lectura de facturas con IA ----------
@@ -784,6 +968,12 @@ class Handler(BaseHTTPRequestHandler):
         user = self.current_user(con)
         if r == "me" and m == "GET":
             return {"user": user_json(user)}
+        if r == "me" and seg[1:] == ["fiscal"] and m == "PUT":
+            series = re.sub(r"[^A-Z0-9]", "", text(data, "series", 6).upper()) or "A"
+            nif = re.sub(r"[\s.-]", "", text(data, "nif", 20)).upper()
+            con.execute("UPDATE users SET fiscal_name=?, fiscal_nif=?, fiscal_address=?, invoice_series=? WHERE id=?",
+                        (text(data, "name", 100), nif, text(data, "address", 160), series, user["id"]))
+            return None
         if r == "me" and seg[1:] == ["prefs"] and m == "PUT":
             try:
                 fs = float(data.get("fontScale"))
@@ -840,6 +1030,11 @@ class Handler(BaseHTTPRequestHandler):
             if m == "POST" and seg[2:] == ["agreements"]:
                 self.need_edit(lv, "pagos")
                 return self.new_agreement(con, c, data)
+            if m == "POST" and seg[2:] == ["invoices"]:
+                self.need_edit(lv, "pagos")
+                ym = self.contract_ym(c, data, con)
+                inv = issue_invoice(con, c, ym)
+                return {"id": inv["id"], "ref": invoice_ref(inv)}
             self.need_edit(lv, "inmuebles")
             if m == "PUT" and len(seg) == 2:
                 return self.save_contract(con, None, c, data)
@@ -849,6 +1044,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.set_ipc(con, c, data)
             if m == "DELETE" and seg[2:] == ["ipc"]:
                 con.execute("DELETE FROM rents WHERE contract_id=? AND from_ym>? AND pct IS NOT NULL", (cid, cur_ym()))
+                return None
+
+        if r == "rent-invoices":
+            self.need_edit(lv, "pagos")
+            iid = self.int_seg(seg, 1)
+            inv = con.execute("SELECT * FROM rent_invoices WHERE id=? AND owner_id=?", (iid, owner_id)).fetchone()
+            if not inv:
+                raise ApiError(404, "Esa factura ya no existe.")
+            if m == "POST" and seg[2:] == ["email"]:
+                try:
+                    to = email_invoice(con, inv)
+                except ApiError:
+                    con.commit()
+                    raise
+                return {"to": to}
+            if m == "DELETE" and len(seg) == 2:
+                last = con.execute("SELECT MAX(number) FROM rent_invoices WHERE owner_id=? AND series=? AND year=?",
+                                   (owner_id, inv["series"], inv["year"])).fetchone()[0]
+                if inv["number"] != last:
+                    raise ApiError(400, "Solo se puede borrar la última factura emitida, para que la numeración no tenga huecos.")
+                con.execute("DELETE FROM rent_invoices WHERE id=?", (iid,))
+                try:
+                    os.remove(os.path.join(UPLOADS, inv["file"]))
+                except OSError:
+                    pass
                 return None
 
         if r == "receipts" and m == "DELETE" and len(seg) == 2:
@@ -1146,6 +1366,12 @@ class Handler(BaseHTTPRequestHandler):
         show_rent = show_pay or lv["inmuebles"] >= 1
         rents, pays, contracts = {}, {}, {}
         due_days = {p["id"]: p["due_day"] for p in con.execute("SELECT id, due_day FROM properties WHERE owner_id=?", (owner_id,))}
+        invs = {}
+        for i in con.execute("SELECT * FROM rent_invoices WHERE owner_id=? ORDER BY year, number", (owner_id,)):
+            invs.setdefault(i["contract_id"], []).append({
+                "id": i["id"], "ym": i["ym"], "ref": invoice_ref(i), "issueDate": i["issue_date"], "url": "/factura/" + i["file"],
+                "base": i["base"] / 100, "iva": i["iva"] / 100, "irpf": i["irpf"] / 100, "total": i["total"] / 100,
+                "emailedAt": i["emailed_at"], "emailError": i["email_error"]})
         overrides, covered, ags = {}, {}, {}
         for o in con.execute("SELECT ma.* FROM month_amounts ma JOIN contracts c ON c.id=ma.contract_id "
                              "JOIN properties p ON p.id=c.property_id WHERE p.owner_id=?", (owner_id,)):
@@ -1184,6 +1410,9 @@ class Handler(BaseHTTPRequestHandler):
             nxt = next((r for r in rr if r["from_ym"] > now and r["pct"] is not None), None)
             contracts.setdefault(c["property_id"], []).append({
                 "id": c["id"], "tenant": c["tenant"], "phone": c["phone"], "email": c["email"],
+                "ivaPct": c["iva_pct"], "irpfPct": c["irpf_pct"], "tenantNif": c["tenant_nif"], "tenantAddress": c["tenant_address"],
+                "autoInvoice": bool(c["auto_invoice"]), "invoiceDay": c["invoice_day"],
+                "invoices": invs.get(c["id"], []) if show_pay else [],
                 "startDate": c["start_date"], "endDate": c["end_date"],
                 "active": c["start_date"] <= today and (not c["end_date"] or c["end_date"] >= today),
                 "rent": rent_at(rr, max(s, last)) / 100 if show_rent else None,
@@ -1211,6 +1440,8 @@ class Handler(BaseHTTPRequestHandler):
                "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props,
                "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "aiReady": ai_ready(ai_config(con)), "publicUrl": PUBLIC_URL, "helpers": [], "invites": []}
         if role == "owner":
+            out["fiscal"] = {"name": owner["fiscal_name"], "nif": owner["fiscal_nif"], "address": owner["fiscal_address"],
+                             "series": owner["invoice_series"] or "A"}
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "email": h["email"], "perms": member_perms(h)}
                               for h in con.execute(
                                   "SELECT m.user_id, m.role, m.perms, u.name, u.email FROM members m JOIN users u ON u.id=m.user_id "
@@ -1226,10 +1457,12 @@ class Handler(BaseHTTPRequestHandler):
         amount, days, due = month_info(c, rr, ym, due_day, overrides.get(key))
         rec = pays.get(key, [])
         paid = sum(round(x["amount"] * 100) for x in rec)
+        tx = tax_split(base_of(c, rr, ym, overrides.get(key)), c) if (c["iva_pct"] or c["irpf_pct"]) else None
         # paidOn: fecha en que quedó pagado del todo (último cobro); None si falta algo.
         return {"ym": ym, "rent": amount / 100, "days": days, "due": due, "custom": key in overrides,
                 "paid": paid / 100, "receipts": rec, "paidOn": rec[-1]["paidOn"] if rec and paid >= amount else None,
-                "agreementId": covered.get(key)}
+                "agreementId": covered.get(key),
+                "tax": {"base": tx[0] / 100, "iva": tx[1] / 100, "irpf": tx[2] / 100} if tx else None}
 
     def save_property(self, con, owner_id, prop, data):
         alias = text(data, "alias", 40)
@@ -1271,6 +1504,20 @@ class Handler(BaseHTTPRequestHandler):
         if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
             raise ApiError(400, "Revise el correo del inquilino.")
         rent = money(data, "rent", "Escriba la renta al mes.")
+        try:
+            iva_pct = float(str(data.get("ivaPct") or 0).replace(",", "."))
+            irpf_pct = float(str(data.get("irpfPct") or 0).replace(",", "."))
+            inv_day = int(data.get("invoiceDay") or 1)
+        except (TypeError, ValueError):
+            raise ApiError(400, "Revise el IVA, la retención y el día de la factura.")
+        if not (0 <= iva_pct <= 30 and 0 <= irpf_pct <= 30 and 1 <= inv_day <= 28):
+            raise ApiError(400, "Revise el IVA, la retención y el día de la factura (entre 1 y 28).")
+        nif = re.sub(r"[\s.-]", "", text(data, "tenantNif", 20)).upper()
+        taddr = text(data, "tenantAddress", 160)
+        auto = 1 if data.get("autoInvoice") else 0
+        if auto and not nif:
+            raise ApiError(400, "Para enviar la factura automáticamente hace falta el NIF del inquilino.")
+        fiscal = (iva_pct, irpf_pct, nif, taddr, auto, inv_day)
         start = day(data, "startDate", "Escriba la fecha en que empieza el contrato.")
         end = day(data, "endDate")
         if end and end < start:
@@ -1285,8 +1532,9 @@ class Handler(BaseHTTPRequestHandler):
             if start <= (o["end_date"] or "9999") and o["start_date"] <= (end or "9999"):
                 raise ApiError(400, f"Esas fechas se pisan con las de {o['tenant']}. Revise cuándo sale uno y entra el otro.")
         if c:
-            con.execute("UPDATE contracts SET tenant=?, phone=?, email=?, start_date=?, end_date=? WHERE id=?",
-                        (tenant, phone, email, start, end, c["id"]))
+            con.execute("UPDATE contracts SET tenant=?, phone=?, email=?, start_date=?, end_date=?, iva_pct=?, irpf_pct=?, "
+                        "tenant_nif=?, tenant_address=?, auto_invoice=?, invoice_day=? WHERE id=?",
+                        (tenant, phone, email, start, end) + fiscal + (c["id"],))
             rr = con.execute("SELECT * FROM rents WHERE contract_id=? ORDER BY from_ym", (c["id"],)).fetchall()
             ref = max(ym_of(start), now if not end else min(now, ym_of(end)))
             if rent_at(rr, ref) != rent:
@@ -1298,8 +1546,9 @@ class Handler(BaseHTTPRequestHandler):
                         con.execute("UPDATE rents SET rent=? WHERE contract_id=? AND from_ym=?",
                                     (raised(rent, r["pct"]), c["id"], r["from_ym"]))
             return {"id": c["id"]}
-        cur = con.execute("INSERT INTO contracts(property_id, tenant, phone, email, start_date, end_date, created_at) "
-                          "VALUES(?,?,?,?,?,?,?)", (pid, tenant, phone, email, start, end, date.today().isoformat()))
+        cur = con.execute("INSERT INTO contracts(property_id, tenant, phone, email, start_date, end_date, created_at, "
+                          "iva_pct, irpf_pct, tenant_nif, tenant_address, auto_invoice, invoice_day) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (pid, tenant, phone, email, start, end, date.today().isoformat()) + fiscal)
         con.execute("INSERT INTO rents(contract_id, from_ym, rent) VALUES(?,?,?)", (cur.lastrowid, ym_of(start), rent))
         if str(data.get("ipcPct") or "").strip():
             new = con.execute("SELECT * FROM contracts WHERE id=?", (cur.lastrowid,)).fetchone()
@@ -1309,7 +1558,8 @@ class Handler(BaseHTTPRequestHandler):
     def delete_contract(self, con, c):
         if (con.execute("SELECT 1 FROM rent_receipts WHERE contract_id=?", (c["id"],)).fetchone()
                 or con.execute("SELECT 1 FROM utilities WHERE contract_id=?", (c["id"],)).fetchone()
-                or con.execute("SELECT 1 FROM agreements WHERE contract_id=?", (c["id"],)).fetchone()):
+                or con.execute("SELECT 1 FROM agreements WHERE contract_id=?", (c["id"],)).fetchone()
+                or con.execute("SELECT 1 FROM rent_invoices WHERE contract_id=?", (c["id"],)).fetchone()):
             raise ApiError(400, "Este inquilino ya tiene pagos o facturas anotados. Póngale fecha de fin en lugar de quitarlo.")
         con.execute("DELETE FROM rents WHERE contract_id=?", (c["id"],))
         con.execute("DELETE FROM month_amounts WHERE contract_id=?", (c["id"],))
@@ -1773,6 +2023,8 @@ class Handler(BaseHTTPRequestHandler):
         aids = [r["id"] for r in con.execute(f"SELECT id FROM agreements WHERE contract_id IN ({qc})", cids)]
         qa = ",".join("?" * len(aids)) or "NULL"
         files = [r["file"] for r in con.execute(f"SELECT file FROM utilities WHERE property_id IN ({q})", props)]
+        files += [r["file"] for r in con.execute(f"SELECT file FROM rent_invoices WHERE contract_id IN ({qc})", cids)]
+        con.execute(f"DELETE FROM rent_invoices WHERE contract_id IN ({qc})", cids)
         con.execute(f"DELETE FROM agreement_payments WHERE agreement_id IN ({qa})", aids)
         con.execute(f"DELETE FROM agreement_months WHERE agreement_id IN ({qa})", aids)
         con.execute(f"DELETE FROM agreements WHERE id IN ({qa})", aids)
@@ -1894,6 +2146,7 @@ if __name__ == "__main__":
         create_admin(sys.argv[2], sys.argv[3])
         raise SystemExit(0)
     init_db()
+    threading.Thread(target=scheduler, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
     print(f"KLYP Alquileres en el puerto {PORT} (datos en {DATA_DIR})", flush=True)

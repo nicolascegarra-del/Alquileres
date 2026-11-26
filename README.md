@@ -39,6 +39,16 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 - **Tamaño del texto:** botones A− / A+ arriba, o en Cuenta (Pequeño, Normal, Grande, Muy grande). Se guarda en la cuenta del usuario.
 - Los cobros de versiones anteriores pasan solos al nuevo sistema, con la forma de pago sin indicar.
 
+## IVA, retención de IRPF y facturas de alquiler
+
+- **En el inquilino** (apartado «Impuestos y factura»): IVA (sin IVA, 21 % o 10 %), retención de IRPF (sin retención o 19 %), NIF y dirección fiscal del inquilino, y si la factura se hace y envía **automáticamente** cada mes, con el día.
+- **Lo que se cobra** cada mes es base + IVA − retención (por ejemplo 1.000 + 210 − 190 = 1.020 €). La ficha y la pantalla de cobro muestran el desglose. El reparto por días se aplica a la base.
+- **Datos fiscales del propietario** en Cuenta → «Datos para las facturas»: nombre o razón social, NIF, dirección y serie. Sin ellos no se emiten facturas.
+- **Emitir:** en la ficha del inmueble, cada mes tiene «Emitir factura» (si el inquilino tiene NIF o impuestos). La factura es un PDF con los datos de las dos partes, el periodo, la base, el IVA, la retención y el total; en vivienda sin IVA lleva la mención de exención. Se puede ver y enviar por correo.
+- **Numeración** correlativa por propietario, serie y año: `2027-A-0001`, `2027-A-0002`… Un mes no se factura dos veces. Solo se puede borrar la **última** emitida (para corregir un error sin dejar huecos).
+- **Automático:** el servidor revisa cada hora los contratos con factura automática; cuando llega el día del mes, emite la factura de ese mes y la envía al correo del inquilino. Si el servidor estuvo apagado ese día, la emite en cuanto arranca. Los fallos de envío quedan anotados en la factura.
+- **Importante (VERI\*FACTU):** la normativa española de sistemas de facturación (Reglamento VERI\*FACTU) puede exigir a los programas que emiten facturas requisitos que esta app **no** cumple: registro encadenado, código QR y envío a la AEAT. Consulte con su asesor antes de usar estas facturas con inquilinos reales.
+
 ## Pendiente y acuerdos de pago
 
 - **Pendiente por persona:** la pestaña agrupa las deudas por inquilino, no por casa. Si en una casa un inquilino debe y el siguiente no, solo aparece el que debe, aunque ya no viva allí.
@@ -222,6 +232,7 @@ Todo está en el volumen `/data`. Programe una copia periódica de ese volumen (
 ## Pendiente para más adelante
 
 - Cobro automático de las suscripciones (por ejemplo con Stripe).
+- Cumplimiento de VERI*FACTU en las facturas de alquiler.
 - Recuperación de clave sin pasar por el administrador (por SMS o correo).
 - Avisos push cuando un pago se retrasa.
 - Envío de las facturas por WhatsApp sin intervención (API de WhatsApp Business de Meta).
