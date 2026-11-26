@@ -159,6 +159,18 @@ table select,table input{min-height:2.4rem;padding:.3rem .6rem;font-size:.9rem;m
 table .btn{display:inline-flex;vertical-align:middle;min-height:2.3rem;font-size:.85rem;width:auto;padding:.2rem .8rem}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}
 .peligro{border-color:var(--bad);max-width:640px}
+.espera{display:grid;place-items:center;padding:2rem}
+.espera span{width:2.5rem;height:2.5rem;border-radius:50%;border:4px solid var(--line);border-top-color:var(--accent);animation:gira 1s linear infinite}
+@keyframes gira{to{transform:rotate(360deg)}}
+.visor summary{font-weight:700;cursor:pointer}
+#visor{display:flex;flex-direction:column;gap:.5rem;margin-top:.5rem}
+#visor canvas,#visor img{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff}
+.fac-grid{display:grid;gap:1rem}
+@media (min-width:900px){
+  .app.ancho{max-width:64rem}
+  .fac-grid{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:start}
+  .fac-grid .visor{position:sticky;top:1rem;max-height:calc(100vh - 2rem);overflow:auto}
+}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.7rem}
 @media (max-width:760px){ .hero{grid-template-columns:1fr} }
 @media (prefers-reduced-motion: no-preference){ .btn,.row,.tab{transition:background-color .15s} }

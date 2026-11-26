@@ -90,6 +90,20 @@
         <button class="btn" type="submit">Enviar prueba</button>
       </form>
     </section>
+    <section class="stack">
+      <h2>IA para leer facturas</h2>
+      <p class="muted">Al subir una factura de suministros, la IA lee el PDF y rellena el tipo, el importe, la fecha y el inmueble; el usuario los revisa antes de guardar.
+        Cada lectura la cobra el proveedor (céntimos). La clave API se saca en la web del proveedor: <b>Gemini</b> en Google AI Studio (la suscripción Gemini Pro no incluye la API),
+        <b>ChatGPT</b> en platform.openai.com y <b>Claude</b> en console.anthropic.com.</p>
+      <p id="ia-estado"></p>
+      <form id="ia" class="card stack-lg" style="max-width:640px">
+        <label class="f">Proveedor<select id="ia-provider"><option value="">Sin IA (rellenar a mano)</option></select></label>
+        <label class="f">Clave API<small id="ia-key-ayuda"></small><input type="password" id="ia-key" autocomplete="off"></label>
+        <label class="f">Modelo<small id="ia-model-ayuda">Déjelo vacío para usar el recomendado.</small><input type="text" id="ia-model" autocomplete="off" autocapitalize="none"></label>
+        <div class="btn-row"><button class="btn primary" type="submit">Guardar</button><button class="btn" type="button" id="ia-probar">Probar</button></div>
+        <p class="msg" id="ia-resultado" hidden></p>
+      </form>
+    </section>
   </div>
 </div>
 <div class="toast" id="toast" role="status" hidden style="bottom:24px"></div>

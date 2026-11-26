@@ -22,6 +22,8 @@ PWA para que propietarios lleven la cuenta de sus alquileres desde el móvil: pa
 - **Inquilinos por fechas:** cada inmueble guarda una lista de contratos (inquilino, teléfono, renta, fecha de inicio y de fin). Con «Cambiar de inquilino» el anterior queda cerrado la víspera y conserva sus pagos y deudas. Las fechas de dos inquilinos no pueden pisarse. Si uno sale y otro entra dentro del mismo mes, la renta de ese mes se reparte por días (por ejemplo, sale el 15 de mayo: paga 15/31 de la renta; el nuevo paga los 16 días restantes y su día de cobro ese mes es el día que entra). En la ficha, «Corregir el importe de un mes» permite poner otra cantidad a mano.
 - **Subida del IPC:** se apunta el porcentaje y la fecha desde la que aplica (al dar de alta el inmueble o después, en la ficha). La renta sube sola desde la mensualidad de ese mes; los meses anteriores no cambian. Pasada la fecha, la ficha vuelve a mostrar «Sin subida de IPC programada» para apuntar la del año siguiente.
 - **Facturas de suministros:** solo en los inmuebles con la casilla «Necesito facturas de suministros». Se sube el PDF o se hacen fotos al papel, una por página; las fotos se convierten en un PDF en el propio móvil (máximo 5 MB) con tipo (luz, agua u otro con texto libre), importe y fecha. La factura se asigna al inquilino que estaba en el inmueble en esa fecha y queda **pendiente de pago** hasta que se marca como pagada; cuenta en Pendiente.
+- **Subida en dos pasos:** 1) el documento (PDF o fotos); 2) los datos, con la factura a la vista (al lado en el ordenador, desplegable en el móvil; se muestra con PDF.js, incluido en `public/vendor/pdfjs`) y un botón **Atrás** que conserva lo escrito.
+- **Lectura con IA (opcional):** si el administrador la configura en `/admin` → «IA para leer facturas», al pasar al paso 2 la IA lee el PDF y rellena tipo, importe, fecha e inmueble (por la dirección de suministro). El usuario revisa y corrige antes de guardar. Si la IA falla, se rellena a mano.
 - **Envío por WhatsApp o correo:** tras guardar, «WhatsApp» y «Correo» abren el mensaje ya escrito, con un enlace al PDF, para el teléfono o el correo del inquilino; solo hay que pulsar Enviar. «Enviar el PDF como archivo» usa el menú de compartir del móvil para adjuntar el documento de verdad. No es un envío sin intervención: eso exige la API de WhatsApp Business de Meta o un servidor de correo.
 - **Correo automático (SMTP):** si el administrador configura en `/admin` el servidor de correo, al guardar una factura se envía sola al correo del inquilino con el PDF adjunto (hay una casilla, marcada por defecto, para no enviarla). En la lista, «Correo» la envía o reenvía directamente; si falla, la factura queda marcada con «Correo no enviado» y el motivo. Sin SMTP configurado, «Correo» abre el correo del móvil con el mensaje escrito.
 - **Seguimiento por inmueble:** en Facturas se puede filtrar por inmueble y ver lo pendiente, lo facturado en el año por tipo y lo cobrado. La ficha del inmueble muestra el mismo resumen.
@@ -116,6 +118,20 @@ En `/admin`, apartado **Correo para enviar las facturas (SMTP)**: servidor, puer
 - La contraseña se guarda en la base de datos (`/data/klyp.db`) tal cual, porque el servidor la necesita para enviar. Proteja el volumen `/data` y sus copias de seguridad, y use una contraseña de aplicación o una cuenta solo para esto.
 - En el VPS, algunos proveedores bloquean el puerto 25; use 587 o 465.
 - Para que los correos no acaben en «no deseado», el dominio del remitente debe tener SPF y DKIM configurados con su proveedor de correo.
+
+## IA para leer facturas
+
+En `/admin` → **IA para leer facturas**: proveedor, clave API y modelo (vacío = el recomendado), con botón **Probar**, que envía una factura de ejemplo y muestra lo que ha leído.
+
+| Proveedor | Dónde sacar la clave | Modelo recomendado |
+|---|---|---|
+| Gemini (Google) | Google AI Studio. La suscripción Gemini Pro de la app **no** incluye la API. | `gemini-2.5-flash` |
+| ChatGPT (OpenAI) | platform.openai.com | `gpt-4.1-mini` |
+| Claude (Anthropic) | console.anthropic.com | `claude-opus-5-5` |
+
+- Cada lectura la cobra el proveedor (normalmente céntimos). La clave se guarda en la base de datos, como la contraseña SMTP.
+- Los nombres de modelo de Gemini y ChatGPT cambian con frecuencia: si «Probar» da error de modelo, escriba en «Modelo» uno vigente de la web del proveedor.
+- El servidor necesita salida a internet hacia el proveedor elegido (`generativelanguage.googleapis.com`, `api.openai.com` o `api.anthropic.com`).
 
 ## Crear un administrador con correo y clave
 

@@ -18,6 +18,9 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
+import urllib.error
+import urllib.request
 from datetime import date, timedelta
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
@@ -60,7 +63,7 @@ MONTHS_BACK = 23  # se muestran como mucho 24 meses por inmueble
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 TYPES = {
     ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8", ".json": "application/json",
+    ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
     ".webmanifest": "application/manifest+json", ".png": "image/png",
     ".svg": "image/svg+xml", ".ico": "image/x-icon", ".jpg": "image/jpeg",
 }
@@ -404,6 +407,175 @@ def owner_plan(con, owner_id):
     return out
 
 
+class PdfDoc:
+    """PDF de una página A4 con texto y líneas, sin librerías. Texto en WinAnsi (acentos y €)."""
+
+    def __init__(self):
+        self.ops = []
+
+    @staticmethod
+    def _s(t):
+        b = str(t).encode("cp1252", "replace")
+        return b.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+    def text(self, x, y, t, size=10, bold=False, right=False):
+        if right:  # alinea a la derecha (aproximado: ancho medio de Helvetica)
+            x -= len(str(t)) * size * 0.5
+        self.ops.append(b"BT /F%d %d Tf %.1f %.1f Td (" % (2 if bold else 1, size, x, y) + self._s(t) + b") Tj ET")
+
+    def line(self, x1, y1, x2, y2, w=0.5):
+        self.ops.append(b"%.1f w %.1f %.1f m %.1f %.1f l S" % (w, x1, y1, x2, y2))
+
+    def bytes(self):
+        content = b"\n".join(self.ops)
+        objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+                b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"]
+        out, offs = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"), []
+        for i, o in enumerate(objs, 1):
+            offs.append(len(out))
+            out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+        xref = len(out)
+        out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+        out += b"".join(b"%010d 00000 n \n" % o for o in offs)
+        out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+        return bytes(out)
+
+
+# ---------- lectura de facturas con IA ----------
+AI_MODELS = {"gemini": "gemini-2.5-flash", "openai": "gpt-4.1-mini", "claude": "claude-opus-5-5"}
+AI_NAMES = {"gemini": "Gemini (Google)", "openai": "ChatGPT (OpenAI)", "claude": "Claude (Anthropic)"}
+AI_FIELDS = {"tipo": "luz, agua u otro", "concepto": "de qué es si no es luz ni agua (gas, comunidad, basuras...); vacío si es luz o agua",
+             "importe_total": "importe TOTAL a pagar de la factura, impuestos incluidos, como número con punto decimal",
+             "fecha_factura": "fecha de emisión de la factura en formato AAAA-MM-DD",
+             "periodo": "periodo facturado, tal como aparece", "direccion_suministro": "dirección del punto de suministro",
+             "empresa": "empresa que emite la factura"}
+AI_PROMPT = ("Eres un asistente que lee facturas españolas de suministros (luz, agua, gas...). Lee el PDF adjunto y devuelve SOLO un objeto JSON "
+             "con exactamente estas claves: " + "; ".join(f"«{k}»: {v}" for k, v in AI_FIELDS.items()) +
+             ". Si un dato no aparece, deja el texto vacío (o 0 en el importe). No inventes datos.")
+AI_SCHEMA = {"type": "object", "additionalProperties": False, "required": list(AI_FIELDS),
+             "properties": {k: ({"type": "number"} if k == "importe_total" else
+                                {"type": "string", "enum": ["luz", "agua", "otro"]} if k == "tipo" else {"type": "string"})
+                            for k in AI_FIELDS}}
+# Modelos de Claude que admiten el respaldo automático del servidor si el modelo rechaza la petición.
+CLAUDE_FALLBACK_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2", "claude-fable-5-1", "claude-opus-5")
+
+
+def ai_config(con):
+    cfg = {"provider": "", "key": "", "model": ""}
+    for r in con.execute("SELECT key, value FROM settings WHERE key LIKE 'ai_%'"):
+        cfg[r["key"][3:]] = r["value"]
+    return cfg
+
+
+def ai_ready(cfg):
+    return cfg["provider"] in AI_MODELS and bool(cfg["key"])
+
+
+def _post_json(url, headers, body, provider):
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                 headers=dict(headers, **{"Content-Type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = (json.loads(e.read().decode("utf-8")).get("error") or {}).get("message", "")
+        except (ValueError, AttributeError):
+            msg = ""
+        if e.code in (401, 403):
+            raise ApiError(502, f"{AI_NAMES[provider]} no acepta la clave API. Revísela en el panel de administración.")
+        if e.code == 429:
+            raise ApiError(502, f"{AI_NAMES[provider]} ha llegado a su límite de uso. Pruebe más tarde o revise su plan.")
+        raise ApiError(502, f"{AI_NAMES[provider]} ha devuelto un error ({e.code}). {msg[:200]}".strip())
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ApiError(502, f"No se ha podido conectar con {AI_NAMES[provider]}: {str(e)[:150]}")
+
+
+def _json_in(txt):
+    """Saca el objeto JSON de la respuesta (por si viene con texto o ``` alrededor)."""
+    a, b = txt.find("{"), txt.rfind("}")
+    try:
+        return json.loads(txt[a:b + 1]) if a >= 0 and b > a else {}
+    except ValueError:
+        return {}
+
+
+def ai_read_pdf(cfg, pdf):
+    """Envía el PDF al proveedor elegido y devuelve los datos de la factura ya limpios."""
+    p, key, model = cfg["provider"], cfg["key"], cfg["model"] or AI_MODELS.get(cfg["provider"], "")
+    b64 = base64.b64encode(pdf).decode("ascii")
+    if p == "gemini":
+        out = _post_json(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                         {"x-goog-api-key": key},
+                         {"contents": [{"parts": [{"inline_data": {"mime_type": "application/pdf", "data": b64}}, {"text": AI_PROMPT}]}],
+                          "generationConfig": {"responseMimeType": "application/json"}}, p)
+        txt = "".join(part.get("text", "") for c in out.get("candidates", [])[:1] for part in c.get("content", {}).get("parts", []))
+    elif p == "openai":
+        out = _post_json("https://api.openai.com/v1/responses", {"Authorization": f"Bearer {key}"},
+                         {"model": model, "text": {"format": {"type": "json_object"}},
+                          "input": [{"role": "user", "content": [
+                              {"type": "input_file", "filename": "factura.pdf", "file_data": "data:application/pdf;base64," + b64},
+                              {"type": "input_text", "text": AI_PROMPT}]}]}, p)
+        txt = "".join(c.get("text", "") for o in out.get("output", []) for c in (o.get("content") or []) if c.get("type") == "output_text")
+    elif p == "claude":
+        headers = {"x-api-key": key, "anthropic-version": "2026-10-21"}
+        body = {"model": model, "max_tokens": 4000,
+                "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": AI_SCHEMA}},
+                "messages": [{"role": "user", "content": [
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                    {"type": "text", "text": AI_PROMPT}]}]}
+        if model in CLAUDE_FALLBACK_MODELS:
+            headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
+            body["fallbacks"] = "default"
+        out = _post_json("https://api.anthropic.com/v1/messages", headers, body, p)
+        if out.get("stop_reason") == "refusal":
+            raise ApiError(502, "Claude no ha querido leer este documento. Rellene los datos a mano.")
+        txt = "".join(c.get("text", "") for c in out.get("content", []) if c.get("type") == "text")
+    else:
+        raise ApiError(400, "La IA no está configurada.")
+    d = _json_in(txt)
+    if not d:
+        raise ApiError(502, f"{AI_NAMES[p]} no ha devuelto datos legibles. Rellene los datos a mano.")
+    kind = str(d.get("tipo") or "").lower().strip()
+    kind = kind if kind in KINDS else "otro"
+    try:
+        amount = round(float(str(d.get("importe_total") or 0).replace(",", ".")), 2)
+    except ValueError:
+        amount = 0
+    when = str(d.get("fecha_factura") or "").strip()[:10]
+    try:
+        when = date.fromisoformat(when).isoformat()
+    except ValueError:
+        when = ""
+    return {"kind": kind, "label": str(d.get("concepto") or "").strip()[:40] if kind == "otro" else "",
+            "amount": amount if amount > 0 else None, "billDate": when, "period": str(d.get("periodo") or "")[:80],
+            "address": str(d.get("direccion_suministro") or "")[:160], "company": str(d.get("empresa") or "")[:80]}
+
+
+def _palabras(t):
+    t = unicodedata.normalize("NFKD", str(t).lower())
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) > 1 and w not in ("de", "la", "el", "del", "calle", "c", "av", "avda", "avenida", "plaza", "pl")}
+
+
+def guess_property(props, address):
+    """Inmueble cuya dirección se parece más a la de la factura (o None si ninguno se parece lo suficiente)."""
+    w = _palabras(address)
+    best, score = None, 0.0
+    for p in props:
+        pw = _palabras(p["address"])
+        if not pw or not w:
+            continue
+        sc = len(w & pw) / len(pw)
+        if sc > score:
+            best, score = p["id"], sc
+    return best if score >= 0.5 else None
+
+
 def plan_json(p):
     return {"id": p["id"], "name": p["name"], "price": p["price"],
             "maxProperties": p["max_properties"], "maxHelpers": p["max_helpers"]}
@@ -725,6 +897,8 @@ class Handler(BaseHTTPRequestHandler):
             self.need_edit(lv, "suministros")
             if m == "POST" and len(seg) == 1:
                 return self.new_utility(con, owner_id, data)
+            if m == "POST" and seg[1:] == ["read"]:
+                return self.read_utility(con, owner_id, data)
             uid = self.int_seg(seg, 1)
             u = con.execute("SELECT u.* FROM utilities u JOIN properties p ON p.id=u.property_id "
                             "WHERE u.id=? AND p.owner_id=?", (uid, owner_id)).fetchone()
@@ -1035,7 +1209,7 @@ class Handler(BaseHTTPRequestHandler):
         out = {"user": user_json(user), "today": today,
                "cartera": {"ownerId": owner_id, "ownerName": owner["name"], "role": role, "perms": lv},
                "carteras": carteras, "plan": owner_plan(con, owner_id), "properties": props,
-               "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "publicUrl": PUBLIC_URL, "helpers": [], "invites": []}
+               "utilities": utilities, "mailReady": smtp_ready(smtp_config(con)), "aiReady": ai_ready(ai_config(con)), "publicUrl": PUBLIC_URL, "helpers": [], "invites": []}
         if role == "owner":
             out["helpers"] = [{"userId": h["user_id"], "name": h["name"], "email": h["email"], "perms": member_perms(h)}
                               for h in con.execute(
@@ -1302,6 +1476,22 @@ class Handler(BaseHTTPRequestHandler):
             (pid, c["id"], kind, label, amount, bill_date, name, date.today().isoformat()))
         return {"id": cur.lastrowid}
 
+    def read_utility(self, con, owner_id, data):
+        cfg = ai_config(con)
+        if not ai_ready(cfg):
+            raise ApiError(400, "La lectura con IA no está configurada.")
+        try:
+            pdf = base64.b64decode(str(data.get("pdf") or ""), validate=True)
+        except ValueError:
+            pdf = b""
+        if not pdf.startswith(b"%PDF-") or len(pdf) > MAX_PDF:
+            raise ApiError(400, "Elija el archivo PDF de la factura (máximo 5 MB).")
+        out = ai_read_pdf(cfg, pdf)
+        props = con.execute("SELECT id, address FROM properties WHERE owner_id=? AND archived=0 AND utilities=1", (owner_id,)).fetchall()
+        out["propertyId"] = guess_property(props, out["address"]) if out["address"] else None
+        out["provider"] = AI_NAMES[cfg["provider"]]
+        return out
+
     def email_utility(self, con, owner_id, u):
         cfg = smtp_config(con)
         if not smtp_ready(cfg):
@@ -1452,6 +1642,8 @@ class Handler(BaseHTTPRequestHandler):
             return {"users": users, "plans": plans}
         if seg[:1] == ["smtp"]:
             return self.admin_smtp(con, m, seg[1:], data)
+        if seg[:1] == ["ai"]:
+            return self.admin_ai(con, m, seg[1:], data)
         if m == "GET" and len(seg) == 3 and seg[0] == "users" and seg[2] == "properties":
             uid = self.int_seg(seg, 1)
             today = date.today().isoformat()
@@ -1602,6 +1794,36 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         return {"properties": 0 if mode == "todo" else len(props), "contracts": 0 if mode == "todo" else len(cids)}
+
+    def admin_ai(self, con, m, seg, data):
+        cfg = ai_config(con)
+        if m == "GET" and not seg:
+            return {"provider": cfg["provider"], "model": cfg["model"], "hasKey": bool(cfg["key"]), "ready": ai_ready(cfg),
+                    "defaults": AI_MODELS, "names": AI_NAMES}
+        if m == "PUT" and not seg:
+            prov = data.get("provider") or ""
+            if prov not in AI_MODELS and prov != "":
+                raise ApiError(400, "Elija el proveedor de IA.")
+            new = {"provider": prov, "model": text(data, "model", 80)}
+            if data.get("clearKey"):
+                new["key"] = ""
+            elif str(data.get("key") or "").strip():
+                new["key"] = str(data["key"]).strip()[:300]
+            con.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", [("ai_" + k, v) for k, v in new.items()])
+            return None
+        if m == "POST" and seg == ["test"]:
+            if not ai_ready(cfg):
+                raise ApiError(400, "Guarde primero el proveedor y la clave.")
+            doc = PdfDoc()
+            for i, (t, size, bold) in enumerate([("Eléctrica de Prueba S.A.", 16, True), ("FACTURA DE ELECTRICIDAD", 12, True),
+                                                 ("Fecha de factura: 03/11/2026", 11, False), ("Periodo: 01/10/2026 - 31/10/2026", 11, False),
+                                                 ("Dirección de suministro: Calle Sol 3, 2º B, 30001 Murcia", 11, False),
+                                                 ("TOTAL A PAGAR: 45,30 €", 14, True)]):
+                doc.text(60, 780 - i * 28, t, size, bold)
+            out = ai_read_pdf(cfg, doc.bytes())
+            out["expected"] = {"kind": "luz", "amount": 45.3, "billDate": "2026-11-03"}
+            return out
+        raise ApiError(404, "No encontrado.")
 
     def admin_smtp(self, con, m, seg, data):
         cfg = smtp_config(con)

@@ -673,25 +673,76 @@
         '<button class="btn mini plain" type="button" data-act="pagina-quitar" data-i="' + i + '">Quitar</button></div>';
     }).join('');
   }
-  function vNuevaFactura(sel) {
-    var ps = S.data.properties.filter(function (p) { return p.utilities; });
-    return '<button class="back" data-act="volver">‹ Volver</button><header><h1>Subir una factura</h1></header>' +
+  /* Subida de una factura en dos pasos: 1) el documento, 2) los datos (leídos con IA si está configurada), con el documento a la vista. */
+  function vNuevaFactura() {
+    var F = S.fac, ps = S.data.properties.filter(function (p) { return p.utilities; }), c = F.campos;
+    if (F.paso === 'leyendo') {
+      return '<header class="stack"><h1>Leyendo la factura…</h1><p class="muted">La IA está sacando el importe, la fecha y el tipo. Tarda unos segundos.</p></header>' +
+        '<div class="espera" role="status"><span></span></div>';
+    }
+    if (F.paso === 'doc') {
+      return '<button class="back" data-act="volver">‹ Volver</button><header class="stack"><h1>Subir una factura</h1><p class="muted">Paso 1 de 2: el documento</p></header>' +
+        '<section class="card"><p class="muted">Elija el PDF de la factura o, si la tiene en papel, hágale una foto (una por página).</p>' +
+        '<div id="doc-lista">' + vDoc() + '</div>' +
+        '<label class="btn primary">Elegir el PDF<input type="file" id="fac-archivo" accept="application/pdf,.pdf,image/*" multiple hidden></label>' +
+        '<label class="btn">' + (S.pages.length ? 'Hacer foto de otra página' : 'Hacer una foto') + '<input type="file" id="fac-foto" accept="image/*" capture="environment" hidden></label></section>' +
+        '<button class="btn primary" data-act="fac-siguiente">Siguiente' + (S.data.aiReady ? ': leer los datos' : '') + ' ›</button>';
+    }
+    return '<button class="back" data-act="fac-atras">‹ Atrás</button><header class="stack"><h1>Subir una factura</h1><p class="muted">Paso 2 de 2: los datos</p></header>' +
+      (F.ia ? '<p class="msg">Datos leídos con ' + esc(F.ia.provider) + (F.ia.company ? ' · ' + esc(F.ia.company) : '') + (F.ia.period ? ' · periodo ' + esc(F.ia.period) : '') +
+        '. <b>Revíselos con la factura antes de guardar.</b></p>' : '') +
+      (F.iaError ? '<p class="err">No se ha podido leer con IA: ' + esc(F.iaError) + ' Rellene los datos a mano.</p>' : '') +
+      '<div class="fac-grid"><details class="visor card"' + (window.innerWidth >= 900 ? ' open' : '') + '><summary>Ver la factura</summary><div id="visor"><p class="muted">Cargando…</p></div></details>' +
       '<form id="form-factura" class="stack-lg">' +
-      '<section class="card"><h2>La factura</h2><p class="muted">Haga una foto al papel (una por página) o elija el PDF o las fotos que ya tenga en el móvil.</p>' +
-      '<div id="doc-lista">' + vDoc() + '</div>' +
-      '<label class="btn primary">' + (S.pages.length ? 'Hacer foto de otra página' : 'Hacer una foto') + '<input type="file" id="fac-foto" accept="image/*" capture="environment" hidden></label>' +
-      '<label class="btn">Elegir PDF o fotos<input type="file" id="fac-archivo" accept="application/pdf,.pdf,image/*" multiple hidden></label></section>' +
-      '<label class="f">¿De qué inmueble es?<select id="fac-piso">' + ps.map(function (p) {
-        return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(nom(p)) + '</option>';
+      '<label class="f">¿De qué inmueble es?' + (F.ia && F.ia.address ? '<small>Dirección en la factura: ' + esc(F.ia.address) + '</small>' : '') + '<select id="fac-piso">' + ps.map(function (p) {
+        return '<option value="' + p.id + '"' + (p.id === c.propertyId ? ' selected' : '') + '>' + esc(nom(p)) + '</option>';
       }).join('') + '</select></label>' +
-      '<label class="f">¿De qué es?<select id="fac-tipo"><option value="luz">Luz</option><option value="agua">Agua</option><option value="otro">Otro</option></select></label>' +
-      '<label class="f" id="fac-otro-caja" hidden>Escriba de qué es<small>Por ejemplo: gas, comunidad, basuras.</small><input type="text" id="fac-otro" maxlength="40"></label>' +
-      '<label class="f">Importe (€)<input type="number" id="fac-importe" inputmode="decimal" min="0.01" step="0.01" required></label>' +
+      '<label class="f">¿De qué es?<select id="fac-tipo">' + [['luz', 'Luz'], ['agua', 'Agua'], ['otro', 'Otro']].map(function (o) {
+        return '<option value="' + o[0] + '"' + (c.kind === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+      }).join('') + '</select></label>' +
+      '<label class="f" id="fac-otro-caja"' + (c.kind === 'otro' ? '' : ' hidden') + '>Escriba de qué es<small>Por ejemplo: gas, comunidad, basuras.</small><input type="text" id="fac-otro" maxlength="40" value="' + esc(c.label || '') + '"></label>' +
+      '<label class="f">Importe total (€)<input type="number" id="fac-importe" inputmode="decimal" min="0.01" step="0.01" required value="' + (c.amount || '') + '"></label>' +
       '<label class="f">Fecha de la factura<small>Se le apunta al inquilino que estaba en el inmueble ese día.</small>' +
-      '<input type="date" id="fac-fecha" required value="' + S.data.today + '"></label>' +
-      (S.data.mailReady ? '<label class="check"><input type="checkbox" id="fac-mail" checked><span><b>Enviarla por correo al inquilino al guardar</b>' +
+      '<input type="date" id="fac-fecha" required value="' + (c.billDate || S.data.today) + '"></label>' +
+      (S.data.mailReady ? '<label class="check"><input type="checkbox" id="fac-mail"' + (c.mail === false ? '' : ' checked') + '><span><b>Enviarla por correo al inquilino al guardar</b>' +
         '<small>Con el PDF adjunto. Solo si tiene apuntado su correo.</small></span></label>' : '') +
-      '<button class="btn primary" type="submit">Guardar la factura</button></form>';
+      '<button class="btn primary" type="submit">Guardar la factura</button></form></div>';
+  }
+  /* Guarda lo escrito en el paso 2 para no perderlo al ir atrás. */
+  function guardarCampos() {
+    var g = function (i) { var el = document.getElementById(i); return el ? el.value : undefined; };
+    if (!document.getElementById('form-factura')) return;
+    S.fac.campos = { propertyId: Number(g('fac-piso')), kind: g('fac-tipo'), label: g('fac-otro'), amount: g('fac-importe'), billDate: g('fac-fecha'),
+      mail: document.getElementById('fac-mail') ? document.getElementById('fac-mail').checked : undefined };
+  }
+  /* Muestra la factura: las fotos tal cual; el PDF con PDF.js (funciona también en los móviles que no abren PDF dentro de la página). */
+  function mostrarVisor() {
+    var box = document.getElementById('visor');
+    if (!box || !S.fac) return;
+    if (S.pages.length) {
+      box.innerHTML = S.pages.map(function (pg, i) { return '<img src="' + pg.url + '" alt="Página ' + (i + 1) + '">'; }).join('');
+      return;
+    }
+    var abrir = '<a class="btn plain" target="_blank" rel="noopener" href="' + S.fac.url + '">Abrir la factura en otra pestaña</a>';
+    import('/vendor/pdfjs/pdf.min.mjs').then(function (pdfjs) {
+      pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
+      return pdfjs.getDocument({ data: bytesDeB64(S.fac.b64) }).promise;
+    }).then(function (pdf) {
+      if (!document.body.contains(box)) return;
+      box.innerHTML = '';
+      var ancho = Math.max(280, box.clientWidth || 320), cadena = Promise.resolve();
+      for (var n = 1; n <= Math.min(pdf.numPages, 10); n++) {
+        (function (n) {
+          cadena = cadena.then(function () { return pdf.getPage(n); }).then(function (page) {
+            var v1 = page.getViewport({ scale: 1 }), escala = ancho / v1.width * (window.devicePixelRatio || 1);
+            var vp = page.getViewport({ scale: escala }), cv = document.createElement('canvas');
+            cv.width = vp.width; cv.height = vp.height; box.appendChild(cv);
+            return page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+          });
+        })(n);
+      }
+      return cadena.then(function () { box.insertAdjacentHTML('beforeend', abrir); });
+    }).catch(function () { box.innerHTML = '<p class="muted">No se puede mostrar aquí.</p>' + abrir; });
   }
   function vFacturaOk(s) {
     var u = S.data.utilities.filter(function (x) { return x.id === s.uid; })[0];
@@ -892,7 +943,7 @@
       else if (s && s.name === 'form-piso') h = vFormPiso(s.id);
       else if (s && s.name === 'form-contrato') h = vFormContrato(s);
       else if (s && s.name === 'form-ipc') h = vFormIpc(s);
-      else if (s && s.name === 'nueva-factura') h = vNuevaFactura(s.id);
+      else if (s && s.name === 'nueva-factura' && S.fac) h = vNuevaFactura();
       else if (s && s.name === 'factura-ok') h = vFacturaOk(s);
       else if (s && s.name === 'nuevo-acuerdo') h = vNuevoAcuerdo(s);
       else if (s && s.name === 'cobro') h = vCobro(s);
@@ -909,6 +960,8 @@
       }).join('');
     }
     view.innerHTML = h;
+    appEl.classList.toggle('ancho', !!(s && s.name === 'nueva-factura' && S.fac && S.fac.paso === 'datos'));
+    if (s && s.name === 'nueva-factura' && S.fac && S.fac.paso === 'datos') mostrarVisor();
     if (top) window.scrollTo(0, 0);
   }
   function go(screen) { S.screen = screen; S.confirm = null; render(true); }
@@ -955,7 +1008,34 @@
     }
     else if (act === 'fs') tamano(Number(b.getAttribute('data-v')), true);
     else if (act === 'fs-set') fijarTam(Number(b.getAttribute('data-v')), true);
-    else if (act === 'nueva-factura') { S.doc = null; S.pages = []; go({ name: 'nueva-factura', id: id }); }
+    else if (act === 'nueva-factura') {
+      S.doc = null; S.pages = [];
+      if (S.fac && S.fac.url) URL.revokeObjectURL(S.fac.url);
+      S.fac = { paso: 'doc', leer: true, campos: { propertyId: id, kind: 'luz' } };
+      go({ name: 'nueva-factura', id: id });
+    }
+    else if (act === 'fac-atras') { guardarCampos(); S.fac.paso = 'doc'; render(true); }
+    else if (act === 'fac-siguiente') {
+      if (S.busy) return;
+      S.busy = true;
+      docFactura().then(function (b64) {
+        S.fac.b64 = b64;
+        if (S.fac.url) URL.revokeObjectURL(S.fac.url);
+        S.fac.url = URL.createObjectURL(new Blob([bytesDeB64(b64)], { type: 'application/pdf' }));
+        if (!S.data.aiReady || !S.fac.leer) { S.fac.paso = 'datos'; return; }
+        S.fac.paso = 'leyendo'; render(true);
+        return api('POST', '/api/utilities/read', { pdf: b64 }).then(function (r) {
+          var c = S.fac.campos;
+          S.fac.ia = r; S.fac.iaError = ''; S.fac.leer = false;
+          c.kind = r.kind; c.label = r.label;
+          if (r.amount) c.amount = r.amount;
+          if (r.billDate) c.billDate = r.billDate;
+          if (r.propertyId) c.propertyId = r.propertyId;
+        }, function (e) { S.fac.ia = null; S.fac.iaError = e.message; S.fac.leer = false; })
+          .then(function () { S.fac.paso = 'datos'; });
+      }).then(function () { render(true); }, function (e) { toast(e.message); })
+        .then(function () { S.busy = false; });
+    }
     else if (act === 'mail-auto') {
       if (S.busy) return;
       b.disabled = true; b.textContent = 'Enviando…';
@@ -966,8 +1046,8 @@
         .then(function () { S.busy = false; });
     }
     else if (act === 'fac-prop') { S.facProp = id; S.tab = 'facturas'; go(null); }
-    else if (act === 'doc-quitar') { S.doc = null; pintarDoc(); }
-    else if (act === 'pagina-quitar') { S.pages.splice(Number(b.getAttribute('data-i')), 1); pintarDoc(); }
+    else if (act === 'doc-quitar') { S.doc = null; S.fac.leer = true; pintarDoc(); }
+    else if (act === 'pagina-quitar') { S.pages.splice(Number(b.getAttribute('data-i')), 1); S.fac.leer = true; pintarDoc(); }
     else if (act === 'nuevo-acuerdo') go({ name: 'nuevo-acuerdo', id: id, cid: cid });
     else if (act === 'acuerdo') go({ name: 'acuerdo', id: id, aid: Number(b.getAttribute('data-aid')) });
     else if (act === 'importe') go({ name: 'importe', id: id });
@@ -1035,7 +1115,7 @@
     var t = ev.target;
     if (/^ac-/.test(t.id)) { previa(); return; }
     if (t.id === 'fac-filtro') { S.facProp = Number(t.value); render(false); return; }
-    if ((t.id === 'fac-foto' || t.id === 'fac-archivo') && t.files && t.files.length) { añadirDoc([].slice.call(t.files)); t.value = ''; return; }
+    if ((t.id === 'fac-foto' || t.id === 'fac-archivo') && t.files && t.files.length) { S.fac.leer = true; añadirDoc([].slice.call(t.files)); t.value = ''; return; }
     if (t.id === 'fac-tipo') { document.getElementById('fac-otro-caja').hidden = t.value !== 'otro'; }
   });
 
@@ -1162,14 +1242,18 @@
       var fb = { propertyId: Number(v('fac-piso')), kind: v('fac-tipo'), label: v('fac-otro'), amount: v('fac-importe'), billDate: v('fac-fecha') };
       var porCorreo = document.getElementById('fac-mail') && document.getElementById('fac-mail').checked, aviso = null;
       run(function () {
-        return docFactura().then(function (b64) { fb.pdf = b64; return api('POST', '/api/utilities', fb); })
+        fb.pdf = S.fac.b64;
+        return api('POST', '/api/utilities', fb)
           .then(function (r) {
             if (!porCorreo) return r;
             /* Se envía después de guardar: si el correo falla, la factura queda guardada igualmente. */
             return api('POST', '/api/utilities/' + r.id + '/email', {}).then(function (m) { aviso = 'Factura guardada y enviada por correo a ' + m.to + '.'; return r; },
               function (e) { aviso = 'Factura guardada, pero el correo no se ha enviado: ' + e.message; return r; });
           })
-          .then(function (r) { S.doc = null; S.pages = []; S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id }; });
+          .then(function (r) {
+            S.doc = null; S.pages = []; if (S.fac.url) URL.revokeObjectURL(S.fac.url); S.fac = null;
+            S.tab = lv('suministros') >= 1 ? 'facturas' : S.tab; S.screen = { name: 'factura-ok', uid: r.id };
+          });
       }).then(function () { window.scrollTo(0, 0); if (aviso) toast(aviso); });
     } else if (f === 'form-cobro') {
       var sc = S.screen, nuevo = null;

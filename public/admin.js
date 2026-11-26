@@ -108,9 +108,44 @@
       .then(function (r) { ev.target.reset(); toast('Alta hecha. Correo enviado a ' + r.email + '.'); return load(); })
       .catch(function (e) { toast(e.message); });
   });
+  var IA = null;
+  function renderIa(c) {
+    IA = c;
+    $('ia-provider').innerHTML = '<option value="">Sin IA (rellenar a mano)</option>' + Object.keys(c.names).map(function (k) {
+      return '<option value="' + k + '"' + (c.provider === k ? ' selected' : '') + '>' + esc(c.names[k]) + '</option>';
+    }).join('');
+    $('ia-model').value = c.model || '';
+    $('ia-key').value = '';
+    $('ia-key-ayuda').textContent = c.hasKey ? 'Hay una guardada. Déjela vacía para no cambiarla.' : '';
+    ayudaModelo();
+    $('ia-estado').innerHTML = c.ready ? '<span class="pill ok">Activada: ' + esc(c.names[c.provider]) + '</span>' : '<span class="pill warn">Sin IA: las facturas se rellenan a mano</span>';
+  }
+  function ayudaModelo() {
+    var p = $('ia-provider').value;
+    $('ia-model').placeholder = p && IA ? IA.defaults[p] : '';
+    $('ia-model-ayuda').textContent = p && IA ? 'Déjelo vacío para usar el recomendado: ' + IA.defaults[p] + '.' : '';
+  }
+  $('ia-provider').addEventListener('change', ayudaModelo);
+  $('ia').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    api('PUT', '/api/admin/ai', { provider: $('ia-provider').value, key: $('ia-key').value, model: $('ia-model').value })
+      .then(function () { return api('GET', '/api/admin/ai'); }).then(function (c) { renderIa(c); toast('Guardado. Pulse «Probar» para comprobarlo.'); })
+      .catch(function (e) { toast(e.message); });
+  });
+  $('ia-probar').addEventListener('click', function (ev) {
+    var b = ev.target, out = $('ia-resultado');
+    b.disabled = true; b.textContent = 'Probando…'; out.hidden = true;
+    api('POST', '/api/admin/ai/test', {}).then(function (r) {
+      var bien = r.kind === r.expected.kind && r.amount === r.expected.amount && r.billDate === r.expected.billDate;
+      out.textContent = (bien ? 'Funciona. ' : 'Responde, pero no ha leído bien la factura de prueba. ') +
+        'Ha leído: ' + r.kind + ', ' + (r.amount == null ? 'sin importe' : r.amount + ' €') + ', fecha ' + (r.billDate || 'sin fecha') + (r.address ? ', ' + r.address : '') + '.';
+      out.hidden = false;
+    }).catch(function (e) { out.textContent = e.message; out.hidden = false; })
+      .then(function () { b.disabled = false; b.textContent = 'Probar'; });
+  });
   function load() {
-    return Promise.all([api('GET', '/api/admin/overview'), api('GET', '/api/admin/smtp')]).then(function (r) {
-      D = r[0]; $('panel').hidden = false; render(); renderSmtp(r[1]);
+    return Promise.all([api('GET', '/api/admin/overview'), api('GET', '/api/admin/smtp'), api('GET', '/api/admin/ai')]).then(function (r) {
+      D = r[0]; $('panel').hidden = false; render(); renderSmtp(r[1]); renderIa(r[2]);
       var sel = $('alta-plan'), prev = sel.value;
       sel.innerHTML = D.plans.map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + '</option>'; }).join('');
       if (prev) sel.value = prev;
